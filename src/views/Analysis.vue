@@ -220,45 +220,47 @@ function nextMonth() { calendarDate.value = calendarDate.value.add(1, 'month') }
       </div>
     </div>
 
-    <el-tabs v-model="activeTab" class="analysis-tabs">
-      <el-tab-pane label="净值曲线" name="netValue">
-        <div ref="netValueRef" class="chart"></div>
-      </el-tab-pane>
-      <el-tab-pane label="收益曲线" name="curve">
-        <div ref="curveRef" class="chart"></div>
-      </el-tab-pane>
+    <div class="card">
+      <el-tabs v-model="activeTab" class="analysis-tabs">
+        <el-tab-pane label="净值曲线" name="netValue">
+          <div ref="netValueRef" class="chart"></div>
+        </el-tab-pane>
+        <el-tab-pane label="收益曲线" name="curve">
+          <div ref="curveRef" class="chart"></div>
+        </el-tab-pane>
 
-      <el-tab-pane label="月度" name="monthly">
-        <div ref="monthlyRef" class="chart"></div>
-        <div v-if="portfolio.monthly.length" class="card">
-          <el-table :data="portfolio.monthly" size="small">
-            <el-table-column prop="month" label="月份" width="100" />
-            <el-table-column label="已实现盈亏">
-              <template #default="{ row }">
-                <span :class="pnlClass(row.realized)" class="num">¥{{ fmtNum(row.realized, 0) }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="其中分红"><template #default="{ row }"><span class="num">¥{{ fmtNum(row.div, 0) }}</span></template></el-table-column>
-            <el-table-column label="笔数" prop="count" width="70" />
-          </el-table>
-        </div>
-      </el-tab-pane>
-      <el-tab-pane label="年度" name="yearly">
-        <div ref="yearlyRef" class="chart"></div>
-        <div v-if="portfolio.yearly.length" class="card">
-          <el-table :data="portfolio.yearly" size="small">
-            <el-table-column prop="year" label="年份" width="90" />
-            <el-table-column label="已实现盈亏">
-              <template #default="{ row }">
-                <span :class="pnlClass(row.realized)" class="num">¥{{ fmtNum(row.realized, 0) }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="其中分红"><template #default="{ row }"><span class="num">¥{{ fmtNum(row.div, 0) }}</span></template></el-table-column>
-            <el-table-column label="笔数" prop="count" width="70" />
-          </el-table>
-        </div>
-      </el-tab-pane>
-    </el-tabs>
+        <el-tab-pane label="月度" name="monthly">
+          <div ref="monthlyRef" class="chart"></div>
+          <div v-if="portfolio.monthly.length">
+            <el-table :data="portfolio.monthly" size="small">
+              <el-table-column prop="month" label="月份" width="100" />
+              <el-table-column label="已实现盈亏">
+                <template #default="{ row }">
+                  <span :class="pnlClass(row.realized)" class="num">¥{{ fmtNum(row.realized, 0) }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="其中分红"><template #default="{ row }"><span class="num">¥{{ fmtNum(row.div, 0) }}</span></template></el-table-column>
+              <el-table-column label="笔数" prop="count" width="70" />
+            </el-table>
+          </div>
+        </el-tab-pane>
+        <el-tab-pane label="年度" name="yearly">
+          <div ref="yearlyRef" class="chart"></div>
+          <div v-if="portfolio.yearly.length">
+            <el-table :data="portfolio.yearly" size="small">
+              <el-table-column prop="year" label="年份" width="90" />
+              <el-table-column label="已实现盈亏">
+                <template #default="{ row }">
+                  <span :class="pnlClass(row.realized)" class="num">¥{{ fmtNum(row.realized, 0) }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="其中分红"><template #default="{ row }"><span class="num">¥{{ fmtNum(row.div, 0) }}</span></template></el-table-column>
+              <el-table-column label="笔数" prop="count" width="70" />
+            </el-table>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
+    </div>
 
     <!-- 盈亏日历 -->
     <div class="card">
@@ -345,11 +347,11 @@ function nextMonth() { calendarDate.value = calendarDate.value.add(1, 'month') }
   margin-top: 4px;
 }
 .analysis-tabs {
-  padding: 0 8px;
+  margin-top: -4px;
 }
 .chart {
   height: 300px;
-  margin: 8px 8px 0;
+  margin: 4px 0 0;
 }
 .calendar-header {
   display: grid;
