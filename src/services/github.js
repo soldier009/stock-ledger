@@ -40,7 +40,15 @@ function headers(token) {
 }
 
 async function gh(path, token, opts = {}) {
-  const res = await fetch(API + path, {
+  // GET 请求追加随机参数：部分网络代理/加速器会按 URL（忽略 Accept 头）缓存 GitHub API 响应，
+  // 导致 contents 元数据请求误命中之前 raw 下载的缓存、返回文件二进制。随机参数使缓存永不命中、强制回源。
+  let url = API + path
+  const isGet = !opts.method || opts.method === 'GET'
+  if (isGet) {
+    const sep = path.includes('?') ? '&' : '?'
+    url += `${sep}_cb=${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
+  }
+  const res = await fetch(url, {
     ...opts,
     headers: { ...headers(token), ...(opts.headers || {}) }
   })
@@ -166,13 +174,20 @@ export async function testConnection(token, repo, path = '') {
 
 export async function uploadBackup(token, owner, repo, path, bytes, message) {
   const content = base64FromBytes(bytes)
-  const existing = await gh(`/repos/${owner}/${repo}/contents/${encodePath(path)}`, token)
+  const p = `/repos/${owner}/${repo}/contents/${encodePath(path)}`
+  // 查已有文件 sha。若首次请求被代理缓存误伤（返回文件二进制导致解析失败），重试一次（gh 每次 GET 都带新随机参数）
+  let existing
+  try {
+    existing = await gh(p, token)
+  } catch {
+    existing = await gh(p, token)
+  }
   const body = {
     message: message || `备份 ${new Date().toISOString()}`,
     content
   }
   if (!existing.notFound && existing.sha) body.sha = existing.sha
-  await gh(`/repos/${owner}/${repo}/contents/${encodePath(path)}`, token, {
+  await gh(p, token, {
     method: 'PUT',
     body: JSON.stringify(body)
   })
@@ -181,7 +196,11 @@ export async function uploadBackup(token, owner, repo, path, bytes, message) {
 
 export async function downloadBackup(token, owner, repo, path) {
   // 用 raw 格式直接获取文件二进制，避免 contents API 对大文件不返回 content 的问题
-  const res = await fetch(`${API}/repos/${owner}/${repo}/contents/${encodePath(path)}`, {
+  // 追加随机参数：避免被代理按 URL 缓存，从而污染同一 URL 的 contents 元数据请求
+  const url =
+    `${API}/repos/${owner}/${repo}/contents/${encodePath(path)}` +
+    `?x=${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
+  const res = await fetch(url, {
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: 'application/vnd.github.raw+json'
