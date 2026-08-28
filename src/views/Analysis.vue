@@ -220,72 +220,6 @@ function nextMonth() { calendarDate.value = calendarDate.value.add(1, 'month') }
       </div>
     </div>
 
-    <!-- 回撤分析 -->
-    <div class="card">
-      <div class="section-title" style="margin-bottom: 12px">回撤分析</div>
-      <template v-if="portfolio.drawdownStats && portfolio.drawdownStats.maxDrawdownPct !== 0">
-        <div class="row between">
-          <div>
-            <div class="muted">最大回撤</div>
-            <div class="num value down">{{ fmtPct(portfolio.drawdownStats.maxDrawdownPct / 100) }}</div>
-          </div>
-          <div>
-            <div class="muted">当前回撤</div>
-            <div class="num value down">{{ portfolio.drawdownStats.recovered ? '已修复' : fmtPct(portfolio.drawdownStats.maxDrawdownPct / 100) }}</div>
-          </div>
-        </div>
-        <div class="row between" style="margin-top: 12px">
-          <div>
-            <div class="muted">峰值日期</div>
-            <div class="num">{{ portfolio.drawdownStats.peakDate || '—' }}</div>
-          </div>
-          <div>
-            <div class="muted">谷底日期</div>
-            <div class="num">{{ portfolio.drawdownStats.troughDate || '—' }}</div>
-          </div>
-          <div>
-            <div class="muted">下跌历时</div>
-            <div class="num">{{ portfolio.drawdownStats.days }} 天</div>
-          </div>
-        </div>
-      </template>
-      <div ref="drawdownRef" class="chart"></div>
-    </div>
-
-    <!-- 盈亏日历 -->
-    <div class="card">
-      <div class="section-title" style="margin-bottom: 12px">盈亏日历</div>
-      <div class="row between" style="margin-bottom: 12px">
-        <el-icon @click="prevMonth"><ArrowLeft /></el-icon>
-        <span class="section-title">{{ calendarDate.format('YYYY年M月') }}</span>
-        <el-icon @click="nextMonth"><ArrowRight /></el-icon>
-      </div>
-      <div class="row between" style="margin-bottom: 12px">
-        <div>
-          <span class="muted">本月变动</span>
-          <span class="num" style="margin-left: 8px" :class="pnlClass(monthChange)">
-            {{ monthChange > 0 ? '+' : '' }}{{ fmtMoney(monthChange, 0) }}
-          </span>
-        </div>
-      </div>
-      <div class="calendar-header">
-        <span v-for="w in ['日','一','二','三','四','五','六']" :key="w">{{ w }}</span>
-      </div>
-      <div class="calendar-grid">
-        <div
-          v-for="d in calendarGrid"
-          :key="d.format('YYYY-MM-DD')"
-          class="calendar-cell"
-          :class="{ muted: !d.isSame(calendarDate, 'month'), today: d.isSame(dayjs(), 'day') }"
-        >
-          <div class="cell-date">{{ d.date() }}</div>
-          <div v-if="dailyMap[d.format('YYYY-MM-DD')]" class="cell-pnl num" :class="pnlClass(dailyMap[d.format('YYYY-MM-DD')].amount)">
-            {{ dailyMap[d.format('YYYY-MM-DD')].amount > 0 ? '+' : '' }}{{ fmtNum(dailyMap[d.format('YYYY-MM-DD')].amount, 0) }}
-          </div>
-        </div>
-      </div>
-    </div>
-
     <el-tabs v-model="activeTab" class="analysis-tabs">
       <el-tab-pane label="净值曲线" name="netValue">
         <div ref="netValueRef" class="chart"></div>
@@ -325,6 +259,72 @@ function nextMonth() { calendarDate.value = calendarDate.value.add(1, 'month') }
         </div>
       </el-tab-pane>
     </el-tabs>
+
+    <!-- 盈亏日历 -->
+    <div class="card">
+      <div class="section-title" style="margin-bottom: 12px">盈亏日历</div>
+      <div class="row between" style="margin-bottom: 12px">
+        <el-icon @click="prevMonth"><ArrowLeft /></el-icon>
+        <span class="section-title">{{ calendarDate.format('YYYY年M月') }}</span>
+        <el-icon @click="nextMonth"><ArrowRight /></el-icon>
+      </div>
+      <div class="row between" style="margin-bottom: 12px">
+        <div>
+          <span class="muted">本月变动</span>
+          <span class="num" style="margin-left: 8px" :class="pnlClass(monthChange)">
+            {{ monthChange > 0 ? '+' : '' }}{{ fmtMoney(monthChange, 0) }}
+          </span>
+        </div>
+      </div>
+      <div class="calendar-header">
+        <span v-for="w in ['日','一','二','三','四','五','六']" :key="w">{{ w }}</span>
+      </div>
+      <div class="calendar-grid">
+        <div
+          v-for="d in calendarGrid"
+          :key="d.format('YYYY-MM-DD')"
+          class="calendar-cell"
+          :class="{ muted: !d.isSame(calendarDate, 'month'), today: d.isSame(dayjs(), 'day') }"
+        >
+          <div class="cell-date">{{ d.date() }}</div>
+          <div v-if="dailyMap[d.format('YYYY-MM-DD')]" class="cell-pnl num" :class="pnlClass(dailyMap[d.format('YYYY-MM-DD')].amount)">
+            {{ dailyMap[d.format('YYYY-MM-DD')].amount > 0 ? '+' : '' }}{{ fmtNum(dailyMap[d.format('YYYY-MM-DD')].amount, 0) }}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 回撤分析 -->
+    <div class="card">
+      <div class="section-title" style="margin-bottom: 12px">回撤分析</div>
+      <template v-if="portfolio.drawdownStats && portfolio.drawdownStats.maxDrawdownPct !== 0">
+        <div class="row between">
+          <div>
+            <div class="muted">最大回撤</div>
+            <div class="num value down">{{ fmtPct(portfolio.drawdownStats.maxDrawdownPct / 100) }}</div>
+          </div>
+          <div>
+            <div class="muted">当前回撤</div>
+            <div class="num value down">{{ portfolio.drawdownStats.recovered ? '已修复' : fmtPct(portfolio.drawdownStats.maxDrawdownPct / 100) }}</div>
+          </div>
+        </div>
+        <div class="row between" style="margin-top: 12px">
+          <div>
+            <div class="muted">峰值日期</div>
+            <div class="num">{{ portfolio.drawdownStats.peakDate || '—' }}</div>
+          </div>
+          <div>
+            <div class="muted">谷底日期</div>
+            <div class="num">{{ portfolio.drawdownStats.troughDate || '—' }}</div>
+          </div>
+          <div>
+            <div class="muted">下跌历时</div>
+            <div class="num">{{ portfolio.drawdownStats.days }} 天</div>
+          </div>
+        </div>
+      </template>
+      <div ref="drawdownRef" class="chart"></div>
+    </div>
   </div>
 </template>
 
