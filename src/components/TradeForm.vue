@@ -1,6 +1,6 @@
 <script setup>
 import { reactive, ref, computed, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import dayjs from 'dayjs'
 import { usePortfolioStore } from '../stores/portfolio'
 import { useSettingsStore } from '../stores/settings'
@@ -85,6 +85,26 @@ watch(visible, (v) => {
     }
   }
 })
+
+// 新建券商：保存到券商列表后自动选中
+async function openAddBroker() {
+  try {
+    const { value } = await ElMessageBox.prompt('请输入券商名称（如：华泰证券、东方财富）', '新建券商', {
+      confirmButtonText: '创建',
+      cancelButtonText: '取消',
+      inputPattern: /\S+/,
+      inputErrorMessage: '名称不能为空'
+    })
+    const name = String(value || '').trim()
+    if (!name) return
+    if (portfolio.brokers.includes(name)) return ElMessage.warning('券商已存在')
+    await portfolio.addBroker(name)
+    form.broker = name
+    ElMessage.success(`已创建券商「${name}」`)
+  } catch {
+    /* 取消 */
+  }
+}
 
 // 选择下拉中新建的标签时，立即并入标签组（无需等待表单提交）
 function syncTags(v) {
@@ -275,9 +295,12 @@ function reset() {
       </el-form-item>
 
       <el-form-item label="所属券商">
-        <el-select v-model="form.broker" style="width: 100%" placeholder="选择券商">
-          <el-option v-for="b in portfolio.brokers" :key="b" :label="b" :value="b" />
-        </el-select>
+        <div class="row gap8" style="width: 100%">
+          <el-select v-model="form.broker" style="flex: 1" placeholder="选择券商">
+            <el-option v-for="b in portfolio.brokers" :key="b" :label="b" :value="b" />
+          </el-select>
+          <el-button @click="openAddBroker">新建</el-button>
+        </div>
         <div class="muted" style="margin-top: 4px">买卖资金只在该券商账户内流动（可在设置中管理券商）</div>
       </el-form-item>
 
