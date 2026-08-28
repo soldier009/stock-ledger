@@ -1,0 +1,189 @@
+:root {
+  --primary: #0f9d78;
+  --primary-dark: #0b7a5e;
+  --bg: #f5f7fa;
+  --card: #ffffff;
+  --text: #1f2937;
+  --text-2: #6b7280;
+  --up: #e63946;
+  --down: #10b981;
+  --border: #eceff3;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  max-width: 520px;
+  margin: 0 auto;
+  min-height: 100vh;
+}
+
+.app {
+  min-height: 100vh;
+}
+
+.page-wrap {
+  padding-bottom: calc(64px + env(safe-area-inset-bottom));
+}
+
+/* 底部导航 */
+.tabbar {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 0;
+  width: 100%;
+  max-width: 520px;
+  height: calc(58px + env(safe-area-inset-bottom));
+  padding-bottom: env(safe-area-inset-bottom);
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(10px);
+  border-top: 1px solid var(--border);
+  display: flex;
+  z-index: 100;
+}
+
+.tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  color: var(--text-2);
+  text-decoration: none;
+  font-size: 11px;
+  transition: color 0.2s;
+}
+
+.tab.active {
+  color: var(--primary);
+}
+
+/* 页面头部 */
+.page-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--bg);
+  padding: 14px 16px 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.page-title {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+/* 卡片 */
+.card {
+  background: var(--card);
+  border-radius: 14px;
+  padding: 14px;
+  margin: 10px 12px;
+  box-shadow: 0 1px 6px rgba(15, 23, 42, 0.05);
+}
+
+/* 涨跌色 */
+.up {
+  color: var(--up) !important;
+}
+.down {
+  color: var(--down) !important;
+}
+.flat {
+  color: var(--text-2) !important;
+}
+
+/* 弹性工具 */
+.row {
+  display: flex;
+  align-items: center;
+}
+.between {
+  justify-content: space-between;
+}
+.gap8 {
+  gap: 8px;
+}
+.flex1 {
+  flex: 1;
+  min-width: 0;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 通用按钮 */
+.primary-btn {
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  padding: 10px 18px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.muted {
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+/* Element Plus 移动端微调 */
+.el-dialog {
+  border-radius: 14px;
+}
+.el-button--primary {
+  --el-button-bg-color: var(--primary);
+  --el-button-border-color: var(--primary);
+  --el-button-hover-bg-color: var(--primary-dark);
+  --el-button-hover-border-color: var(--primary-dark);
+}
+.el-picker-panel,
+.el-select-dropdown {
+  max-width: 92vw;
+}
+
+.empty-tip {
+  text-align: center;
+  color: var(--text-2);
+  padding: 60px 20px;
+  font-size: 14px;
+}
+
+.empty-tip .icon {
+  font-size: 40px;
+  margin-bottom: 12px;
+  opacity: 0.4;
+}
+
+.splash {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.splash-logo {
+  font-size: 48px;
+}
