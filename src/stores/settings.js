@@ -31,7 +31,13 @@ export const useSettingsStore = defineStore('settings', {
     isGithubReady: (s) => !!(s.github.token && s.github.repo)
   },
   actions: {
-    load() {
+    /**
+     * 从数据库读取设置到内存 store。
+     * skipGithub=true 用于同步/恢复云端数据后重读本地设置：
+     * 此时数据库刚被云端备份整体替换，需要刷新 tags/rates 等业务设置，
+     * 但不覆盖本机 GitHub 配置（token 是本机隐私配置，不应被云端备份回写）。
+     */
+    load(skipGithub = false) {
       const github = getSetting('github')
       const rates = getSetting('rates')
       const stampTaxRate = getSetting('stampTaxRate')
@@ -39,13 +45,14 @@ export const useSettingsStore = defineStore('settings', {
       const tags = getSetting('tags')
       const lastBackupAt = getSetting('lastBackupAt')
       const lastSyncAt = getSetting('lastSyncAt')
-      if (github) this.github = { ...this.github, ...github }
+      if (github && !skipGithub) this.github = { ...this.github, ...github }
       if (rates) this.rates = { ...this.rates, ...rates }
       if (stampTaxRate != null) this.stampTaxRate = stampTaxRate
       if (refreshMinutes != null) this.refreshMinutes = refreshMinutes
       if (Array.isArray(tags)) this.tags = tags
-      if (lastBackupAt) this.lastBackupAt = lastBackupAt
-      if (lastSyncAt) this.lastSyncAt = lastSyncAt
+      // skipGithub 时同步/恢复云端数据刚替换本地库，保持本地操作时间戳不被云端旧值覆盖
+      if (lastBackupAt && !skipGithub) this.lastBackupAt = lastBackupAt
+      if (lastSyncAt && !skipGithub) this.lastSyncAt = lastSyncAt
     },
     async saveTags(v) {
       this.tags = [...new Set(v.filter(Boolean))]
@@ -128,6 +135,7 @@ export const useSettingsStore = defineStore('settings', {
       const cloud = await downloadBackup(this.github.token, owner, repo, this.github.path)
       if (!cloud || !cloud.bytes) throw new Error('云端没有找到备份文件，或仓库为空')
       loadBytes(cloud.bytes)
+      this.load(true) // 云端备份替换本地库后，重读标签/汇率等设置，保持内存与数据库一致
       await persist()
       return true
     },
@@ -167,6 +175,7 @@ export const useSettingsStore = defineStore('settings', {
           // 无法判断本地是否更新，自动同步保守处理，避免误覆盖
           if (localAt === 0 && hasData()) return 'conflict'
           loadBytes(cloud.bytes)
+          this.load(true) // 云端备份替换本地库后，重读标签/汇率等设置，保持内存与数据库一致
           await persist()
           this.lastSyncAt = new Date().toISOString()
           setSetting('lastSyncAt', this.lastSyncAt)
