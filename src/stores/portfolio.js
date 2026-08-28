@@ -9,6 +9,8 @@ import {
   insertBroker,
   renameBroker as dbRenameBroker,
   deleteBroker as dbDeleteBroker,
+  getDefaultBroker as dbGetDefaultBroker,
+  setDefaultBroker as dbSetDefaultBroker,
   markDirty
 } from '../db'
 import {
@@ -33,6 +35,7 @@ export const usePortfolioStore = defineStore('portfolio', {
     cashFlows: [],
     stocks: [],
     brokers: [],
+    defaultBroker: DEFAULT_BROKER,
     positions: [],
     realizedEvents: [],
     monthly: [],
@@ -80,7 +83,15 @@ export const usePortfolioStore = defineStore('portfolio', {
       this.cashFlows = all('SELECT * FROM cash_flows ORDER BY date, id')
       this.syncStocks()
       this.brokers = getBrokers().map((b) => b.name)
-      if (!this.brokers.includes(DEFAULT_BROKER)) this.brokers.unshift(DEFAULT_BROKER)
+      // 读取默认券商设置并校验：必须存在于券商列表，否则回退到「默认账户」或列表中首个券商
+      let def = dbGetDefaultBroker()
+      if (!this.brokers.includes(def)) {
+        def = this.brokers.includes(DEFAULT_BROKER) ? DEFAULT_BROKER : this.brokers[0] || DEFAULT_BROKER
+      }
+      // 列表为空时至少保留一个可用账户（兼容全新库）
+      if (this.brokers.length === 0) this.brokers.unshift(def)
+      if (dbGetDefaultBroker() !== def) dbSetDefaultBroker(def)
+      this.defaultBroker = def
       this.recompute()
     },
 
@@ -93,7 +104,7 @@ export const usePortfolioStore = defineStore('portfolio', {
         seen.add(key)
         const exist = get('SELECT id, name FROM stocks WHERE market = ? AND code = ?', [t.market, t.code])
         if (!exist) {
-          run('INSERT INTO stocks (market, code, name, broker) VALUES (?,?,?,?)', [t.market, t.code, t.name || '', t.broker || DEFAULT_BROKER])
+          run('INSERT INTO stocks (market, code, name, broker) VALUES (?,?,?,?)', [t.market, t.code, t.name || '', t.broker || this.defaultBroker])
         } else if (t.name && !exist.name) {
           run('UPDATE stocks SET name = ? WHERE id = ?', [t.name, exist.id])
         }
@@ -109,7 +120,7 @@ export const usePortfolioStore = defineStore('portfolio', {
     },
 
     recompute() {
-      const r = computeAll(this.trades, this.cashFlows)
+      const r = computeAll(this.trades, this.cashFlows, this.defaultBroker)
       const settings = useSettingsStore()
       const rates = {
         usd: this.rates.usd || settings.rates.usd || 7.2,
@@ -140,7 +151,7 @@ export const usePortfolioStore = defineStore('portfolio', {
           ...p,
           tag: st ? st.tag : '[]',
           note: st ? st.note : '',
-          broker: st && st.broker ? st.broker : DEFAULT_BROKER,
+          broker: st && st.broker ? st.broker : this.defaultBroker,
           quote: q,
           price,
           rate,
@@ -224,7 +235,7 @@ export const usePortfolioStore = defineStore('portfolio', {
 
     // 记一笔：写入交易，并同步股票主数据（含标签、所属券商）
     async addTrade(t) {
-      const broker = t.broker || DEFAULT_BROKER
+      const broker = t.broker || this.defaultBroker
       run(
         'INSERT INTO trades (date, market, code, name, type, shares, price, fee, tax, amount, note, broker) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
         [t.date, t.market, t.code, t.name || '', t.type, t.shares || 0, t.price || 0, t.fee || 0, t.tax || 0, t.amount || 0, t.note || '', broker]
@@ -253,7 +264,7 @@ export const usePortfolioStore = defineStore('portfolio', {
 
     // 编辑交易记录
     async updateTrade(id, t) {
-      const broker = t.broker || DEFAULT_BROKER
+      const broker = t.broker || this.defaultBroker
       run(
         'UPDATE trades SET date=?, market=?, code=?, name=?, type=?, shares=?, price=?, fee=?, tax=?, amount=?, note=?, broker=? WHERE id=?',
         [t.date, t.market, t.code, t.name || '', t.type, t.shares || 0, t.price || 0, t.fee || 0, t.tax || 0, t.amount || 0, t.note || '', broker, id]
@@ -290,7 +301,7 @@ export const usePortfolioStore = defineStore('portfolio', {
           name,
           JSON.stringify(Array.isArray(tag) ? tag : []),
           note || '',
-          broker || DEFAULT_BROKER
+          broker || this.defaultBroker
         ])
       }
       await this.loadData()
@@ -305,7 +316,7 @@ export const usePortfolioStore = defineStore('portfolio', {
       const name = patch.name ?? exist?.name ?? ''
       const tag = Array.isArray(patch.tag) ? JSON.stringify(patch.tag) : (exist?.tag ?? '[]')
       const note = patch.note ?? exist?.note ?? ''
-      const broker = patch.broker ?? exist?.broker ?? DEFAULT_BROKER
+      const broker = patch.broker ?? exist?.broker ?? this.defaultBroker
       if (exist) {
         run('UPDATE stocks SET name = ?, tag = ?, note = ?, broker = ? WHERE id = ?', [name, tag, note, broker, exist.id])
       } else {
@@ -335,7 +346,7 @@ export const usePortfolioStore = defineStore('portfolio', {
         c.type,
         c.amount,
         c.note || '',
-        c.broker || DEFAULT_BROKER
+        c.broker || this.defaultBroker
       ])
       await this.loadData()
       markDirty()
@@ -380,6 +391,8 @@ export const usePortfolioStore = defineStore('portfolio', {
     async renameBroker(oldName, newName) {
       const n = (newName || '').trim()
       if (!n || n === oldName) return
+      // 重命名的是默认账户时，默认设置同步更新
+      if (oldName === this.defaultBroker) dbSetDefaultBroker(n)
       dbRenameBroker(oldName, n)
       await this.loadData()
       markDirty()
@@ -387,8 +400,22 @@ export const usePortfolioStore = defineStore('portfolio', {
     },
 
     async deleteBroker(name) {
-      dbDeleteBroker(name)
+      // 删除的是默认账户时，先将默认标记移交给其他券商，数据也归入该账户
+      let fallback = this.defaultBroker
+      if (name === this.defaultBroker) {
+        fallback = this.brokers.find((b) => b !== name) || DEFAULT_BROKER
+        if (fallback && this.brokers.includes(fallback)) dbSetDefaultBroker(fallback)
+      }
+      dbDeleteBroker(name, fallback)
       await this.loadData()
+      markDirty()
+      await persist()
+    },
+
+    async setDefaultBroker(name) {
+      if (!this.brokers.includes(name)) return
+      dbSetDefaultBroker(name)
+      this.defaultBroker = name
       markDirty()
       await persist()
     }

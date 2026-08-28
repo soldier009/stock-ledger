@@ -20,7 +20,7 @@ const code = String(route.params.code || '')
 const stock = computed(() => portfolio.stocks.find((s) => s.market === market && s.code === code))
 const name = computed(() => stock.value?.name || portfolio.trades.find((t) => t.market === market && t.code === code)?.name || code)
 const tags = computed(() => parseTags(stock.value?.tag))
-const broker = computed(() => stock.value?.broker || DEFAULT_BROKER)
+const broker = computed(() => stock.value?.broker || portfolio.defaultBroker || DEFAULT_BROKER)
 
 // 该股票全部交易记录（倒序）
 const stockTrades = computed(() =>
@@ -80,7 +80,7 @@ function openInfoEdit() {
 
 async function saveInfo() {
   if (!infoForm.name.trim()) return ElMessage.warning('请填写股票名称')
-  const newBroker = infoForm.broker || DEFAULT_BROKER
+  const newBroker = infoForm.broker || portfolio.defaultBroker || DEFAULT_BROKER
   let syncTrades = false
   // 券商发生变更且有交易记录时，询问是否一并修改全部记录
   if (newBroker !== broker.value && stockTrades.value.length) {

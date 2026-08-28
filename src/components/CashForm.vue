@@ -28,7 +28,7 @@ watch(visible, (v) => {
     type: 'deposit',
     amount: null,
     note: '',
-    broker: props.presetBroker || portfolio.brokers[0] || DEFAULT_BROKER
+    broker: props.presetBroker || portfolio.defaultBroker || DEFAULT_BROKER
   })
 })
 
@@ -42,7 +42,7 @@ async function submit() {
       type: form.type,
       amount: Number(form.amount),
       note: form.note.trim(),
-      broker: form.broker || DEFAULT_BROKER
+      broker: form.broker || portfolio.defaultBroker || DEFAULT_BROKER
     })
     ElMessage.success('记录成功')
     visible.value = false

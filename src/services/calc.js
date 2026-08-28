@@ -7,14 +7,14 @@ import dayjs from 'dayjs'
  * 成本核算方式：移动加权平均
  * 现金按券商分账：每笔交易/资金流水归属于其所在券商账户
  */
-export function computeAll(trades, cashFlows) {
+export function computeAll(trades, cashFlows, defaultBroker = DEFAULT_BROKER) {
   const posMap = new Map()
   const realizedEvents = []
   const brokerCash = new Map()
   let totalRealized = 0
 
   const addCash = (broker, amt) => {
-    const b = broker || DEFAULT_BROKER
+    const b = broker || defaultBroker
     brokerCash.set(b, (brokerCash.get(b) || 0) + amt)
   }
 

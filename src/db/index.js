@@ -72,13 +72,21 @@ function migrate() {
   try { run('ALTER TABLE stocks ADD COLUMN broker TEXT DEFAULT ""') } catch {}
   try { run('ALTER TABLE trades ADD COLUMN broker TEXT DEFAULT ""') } catch {}
   try { run('ALTER TABLE cash_flows ADD COLUMN broker TEXT DEFAULT ""') } catch {}
-  // 确保默认券商存在
-  const b = get('SELECT id FROM brokers WHERE name = ?', [DEFAULT_BROKER])
-  if (!b) run('INSERT INTO brokers (name) VALUES (?)', [DEFAULT_BROKER])
+  // 确保至少存在一个券商账户
+  const cnt = get('SELECT COUNT(*) AS c FROM brokers')
+  if (!cnt || cnt.c === 0) run('INSERT INTO brokers (name) VALUES (?)', [DEFAULT_BROKER])
+  // 确保默认券商设置有效：指向的账户必须存在于券商列表，否则回退到默认账户/首个券商
+  const names = all('SELECT name FROM brokers').map((r) => r.name)
+  const saved = getSetting('defaultBroker', null)
+  let def = saved
+  if (!names.includes(def)) {
+    def = names.includes(DEFAULT_BROKER) ? DEFAULT_BROKER : names[0] || DEFAULT_BROKER
+  }
+  if (def !== saved) setSetting('defaultBroker', def)
   // 老数据回填默认券商
-  run("UPDATE stocks SET broker = ? WHERE broker IS NULL OR broker = ''", [DEFAULT_BROKER])
-  run("UPDATE trades SET broker = ? WHERE broker IS NULL OR broker = ''", [DEFAULT_BROKER])
-  run("UPDATE cash_flows SET broker = ? WHERE broker IS NULL OR broker = ''", [DEFAULT_BROKER])
+  run("UPDATE stocks SET broker = ? WHERE broker IS NULL OR broker = ''", [def])
+  run("UPDATE trades SET broker = ? WHERE broker IS NULL OR broker = ''", [def])
+  run("UPDATE cash_flows SET broker = ? WHERE broker IS NULL OR broker = ''", [def])
 }
 
 function openIDB() {
@@ -246,12 +254,24 @@ export function renameBroker(oldName, newName) {
   run('UPDATE cash_flows SET broker = ? WHERE broker = ?', [newName, oldName])
 }
 
-export function deleteBroker(name) {
+export function deleteBroker(name, fallback = DEFAULT_BROKER) {
   run('DELETE FROM brokers WHERE name = ?', [name])
-  // 该券商名下的数据移回默认账户
-  run('UPDATE stocks SET broker = ? WHERE broker = ?', [DEFAULT_BROKER, name])
-  run('UPDATE trades SET broker = ? WHERE broker = ?', [DEFAULT_BROKER, name])
-  run('UPDATE cash_flows SET broker = ? WHERE broker = ?', [DEFAULT_BROKER, name])
+  // 确保兜底账户存在，避免数据指向不存在的券商
+  if (!get('SELECT id FROM brokers WHERE name = ?', [fallback])) {
+    run('INSERT INTO brokers (name) VALUES (?)', [fallback])
+  }
+  // 该券商名下的数据移入兜底账户
+  run('UPDATE stocks SET broker = ? WHERE broker = ?', [fallback, name])
+  run('UPDATE trades SET broker = ? WHERE broker = ?', [fallback, name])
+  run('UPDATE cash_flows SET broker = ? WHERE broker = ?', [fallback, name])
+}
+
+export function getDefaultBroker() {
+  return getSetting('defaultBroker', null)
+}
+
+export function setDefaultBroker(name) {
+  setSetting('defaultBroker', name)
 }
 
 export function getSetting(key, fallback = null) {

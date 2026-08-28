@@ -7,7 +7,6 @@ import { useSettingsStore } from '../stores/settings'
 import { exportBytes } from '../db'
 import { exportExcel, exportPdf, buildReportData } from '../services/export'
 import { testConnection } from '../services/github'
-import { DEFAULT_BROKER } from '../constants'
 
 const portfolio = usePortfolioStore()
 const settings = useSettingsStore()
@@ -173,17 +172,25 @@ async function addBroker() {
 
 async function removeBroker(name) {
   if (portfolio.brokers.length <= 1) return ElMessage.warning('至少保留一个券商')
+  let msg
+  if (name === portfolio.defaultBroker) {
+    const next = portfolio.brokers.find((b) => b !== name) || portfolio.defaultBroker
+    msg = `「${name}」是当前默认账户，删除后默认账户将切换为「${next}」，其名下数据也会一并归入该账户。确定删除？`
+  } else {
+    msg = `删除券商「${name}」后，其名下股票与交易将归入「${portfolio.defaultBroker}」账户，确定删除？`
+  }
   try {
-    await ElMessageBox.confirm(
-      `删除券商「${name}」后，其名下股票与交易将归入「${DEFAULT_BROKER}」账户，确定删除？`,
-      '删除券商',
-      { type: 'warning' }
-    )
+    await ElMessageBox.confirm(msg, '删除券商', { type: 'warning' })
     await portfolio.deleteBroker(name)
     ElMessage.success('已删除')
   } catch {
     /* 取消 */
   }
+}
+
+async function setDefaultBroker(b) {
+  await portfolio.setDefaultBroker(b)
+  ElMessage.success(`已将「${b}」设为默认账户`)
 }
 
 function startRenameBroker(name) {
@@ -344,9 +351,10 @@ function commitRename(oldTag) {
         <template v-else>
           <div class="row gap8">
             <span class="tag-name">{{ b }}</span>
-            <span v-if="b === DEFAULT_BROKER" class="muted" style="font-size: 12px">（默认）</span>
+            <span v-if="b === portfolio.defaultBroker" class="muted" style="font-size: 12px">（默认）</span>
           </div>
           <div class="row gap4">
+            <el-button v-if="b !== portfolio.defaultBroker" size="small" text type="primary" @click="setDefaultBroker(b)">设为默认</el-button>
             <el-button size="small" text @click="startRenameBroker(b)">重命名</el-button>
             <el-button size="small" text type="danger" @click="removeBroker(b)">删除</el-button>
           </div>

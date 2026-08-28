@@ -16,7 +16,7 @@ const props = defineProps({
   preset: { type: Object, default: null }
 })
 
-const defaultBroker = () => portfolio.brokers[0] || DEFAULT_BROKER
+const defaultBroker = () => portfolio.defaultBroker || DEFAULT_BROKER
 const portfolio = usePortfolioStore()
 const settings = useSettingsStore()
 const submitting = ref(false)
