@@ -7,7 +7,10 @@ import { fmtMoney, fmtNum, fmtPct, pnlClass, marketLabel, fmtTime } from '../uti
 
 const portfolio = usePortfolioStore()
 const chartRef = ref(null)
+const pieRef = ref(null)
 let chart = null
+let pieChart = null
+const PALETTE = ['#dc2626', '#3b82f6', '#f59e0b', '#10b981', '#8b5cf6', '#14b8a6', '#f97316', '#64748b']
 
 const ranges = [
   { label: '近一周', key: '1w' },
@@ -106,6 +109,28 @@ function draw() {
   })
 }
 
+// 持仓分布（按个股）
+function drawPie() {
+  if (!pieRef.value) return
+  if (!pieChart) pieChart = echarts.init(pieRef.value)
+  const data = portfolio.positions.map((p) => ({ name: p.name || p.code, value: Math.round(p.mvCny * 100) / 100 }))
+  const total = data.reduce((a, b) => a + b.value, 0)
+  if (!data.length) { pieChart.clear(); return }
+  pieChart.setOption({
+    tooltip: { trigger: 'item', formatter: (p) => `${p.name}<br/>¥${fmtNum(p.value, 0)}（${p.percent}%）` },
+    graphic: [
+      { type: 'text', left: 'center', top: '42%', style: { text: '持仓市值', textAlign: 'center', fill: '#94a3b8', fontSize: 12 } },
+      { type: 'text', left: 'center', top: '48%', style: { text: '¥' + fmtNum(total, 0), textAlign: 'center', fill: '#1f2937', fontSize: 18, fontWeight: 700 } }
+    ],
+    series: [{
+      type: 'pie', radius: ['42%', '68%'], center: ['50%', '50%'],
+      itemStyle: { borderRadius: 6, borderColor: '#fff', borderWidth: 2 },
+      label: { color: '#334155', fontSize: 11, formatter: '{b}\n{d}%' },
+      color: PALETTE, data
+    }]
+  })
+}
+
 watch([() => filteredSeries.value.length, () => portfolio.netValue.length], async () => {
   await nextTick()
   draw()
@@ -113,16 +138,22 @@ watch([() => filteredSeries.value.length, () => portfolio.netValue.length], asyn
 
 watch(activeRange, draw)
 
-function onResize() { chart && chart.resize() }
+watch(
+  () => portfolio.positions.map((p) => Math.round(p.mvCny)).join(','),
+  async () => { await nextTick(); drawPie() }
+)
+
+function onResize() { chart && chart.resize(); pieChart && pieChart.resize() }
 
 onMounted(() => {
-  nextTick().then(draw)
+  nextTick().then(() => { draw(); drawPie() })
   window.addEventListener('resize', onResize)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onResize)
   chart && chart.dispose()
+  pieChart && pieChart.dispose()
 })
 </script>
 
@@ -213,6 +244,13 @@ onBeforeUnmount(() => {
       </div>
       <div v-else class="muted" style="text-align: center; padding: 20px">暂无持仓数据</div>
     </div>
+
+    <!-- 持仓分布 -->
+    <div class="card">
+      <div class="section-title" style="margin-bottom: 12px">持仓分布</div>
+      <div ref="pieRef" class="pie-chart"></div>
+      <div v-if="!portfolio.positions.length" class="muted" style="text-align: center; padding: 20px">暂无持仓数据</div>
+    </div>
   </div>
 </template>
 
@@ -247,6 +285,9 @@ onBeforeUnmount(() => {
 }
 .overview-chart {
   height: 220px;
+}
+.pie-chart {
+  height: 260px;
 }
 .metrics {
   padding-top: 16px;

@@ -12,12 +12,10 @@ const calendarDate = ref(dayjs())
 const curveRef = ref(null)
 const netValueRef = ref(null)
 const drawdownRef = ref(null)
-const pieRef = ref(null)
 const monthlyRef = ref(null)
 const yearlyRef = ref(null)
 
 const charts = {}
-const PALETTE = ['#dc2626', '#3b82f6', '#f59e0b', '#10b981', '#8b5cf6', '#14b8a6', '#f97316', '#64748b']
 
 const totalCost = computed(() => portfolio.positions.reduce((a, p) => a + p.avgCost * p.shares * p.rate, 0))
 
@@ -97,27 +95,6 @@ function drawDrawdown() {
   })
 }
 
-function drawPie() {
-  const chart = initChart(pieRef, 'pie')
-  if (!chart) return
-  const data = portfolio.positions.map((p) => ({ name: p.name || p.code, value: Math.round(p.mvCny * 100) / 100 }))
-  const total = data.reduce((a, b) => a + b.value, 0)
-  if (!data.length) { chart.clear(); return }
-  chart.setOption({
-    tooltip: { trigger: 'item', formatter: (p) => `${p.name}<br/>¥${fmtNum(p.value, 0)}（${p.percent}%）` },
-    graphic: [
-      { type: 'text', left: 'center', top: '42%', style: { text: '持仓市值', textAlign: 'center', fill: '#94a3b8', fontSize: 12 } },
-      { type: 'text', left: 'center', top: '48%', style: { text: '¥' + fmtNum(total, 0), textAlign: 'center', fill: '#1f2937', fontSize: 18, fontWeight: 700 } }
-    ],
-    series: [{
-      type: 'pie', radius: ['42%', '68%'], center: ['50%', '50%'],
-      itemStyle: { borderRadius: 6, borderColor: '#fff', borderWidth: 2 },
-      label: { color: '#334155', fontSize: 11, formatter: '{b}\n{d}%' },
-      color: PALETTE, data
-    }]
-  })
-}
-
 function drawMonthly() {
   const chart = initChart(monthlyRef, 'monthly')
   if (!chart) return
@@ -154,19 +131,19 @@ function drawYearly() {
   })
 }
 
-const drawMap = { curve: drawCurve, netValue: drawNetValue, drawdown: drawDrawdown, pie: drawPie, monthly: drawMonthly, yearly: drawYearly }
+const drawMap = { curve: drawCurve, netValue: drawNetValue, monthly: drawMonthly, yearly: drawYearly }
 
 function redraw() { drawMap[activeTab.value]?.() }
 
 watch(activeTab, async () => { await nextTick(); redraw() })
 watch(
-  () => [portfolio.positions.length, portfolio.monthly.length, portfolio.yearly.length, portfolio.cumulative.length, portfolio.netValue.length, portfolio.positions.map((p) => Math.round(p.mvCny)).join(',')],
-  () => redraw()
+  () => [portfolio.monthly.length, portfolio.yearly.length, portfolio.cumulative.length, portfolio.netValue.length],
+  () => { redraw(); drawDrawdown() }
 )
 
 function onResize() { Object.values(charts).forEach((c) => c && c.resize()) }
 
-onMounted(async () => { await nextTick(); redraw(); window.addEventListener('resize', onResize) })
+onMounted(async () => { await nextTick(); redraw(); drawDrawdown(); window.addEventListener('resize', onResize) })
 onBeforeUnmount(() => { window.removeEventListener('resize', onResize); Object.values(charts).forEach((c) => c && c.dispose()) })
 
 // 日历
@@ -243,6 +220,72 @@ function nextMonth() { calendarDate.value = calendarDate.value.add(1, 'month') }
       </div>
     </div>
 
+    <!-- 回撤分析 -->
+    <div class="card">
+      <div class="section-title" style="margin-bottom: 12px">回撤分析</div>
+      <template v-if="portfolio.drawdownStats && portfolio.drawdownStats.maxDrawdownPct !== 0">
+        <div class="row between">
+          <div>
+            <div class="muted">最大回撤</div>
+            <div class="num value down">{{ fmtPct(portfolio.drawdownStats.maxDrawdownPct / 100) }}</div>
+          </div>
+          <div>
+            <div class="muted">当前回撤</div>
+            <div class="num value down">{{ portfolio.drawdownStats.recovered ? '已修复' : fmtPct(portfolio.drawdownStats.maxDrawdownPct / 100) }}</div>
+          </div>
+        </div>
+        <div class="row between" style="margin-top: 12px">
+          <div>
+            <div class="muted">峰值日期</div>
+            <div class="num">{{ portfolio.drawdownStats.peakDate || '—' }}</div>
+          </div>
+          <div>
+            <div class="muted">谷底日期</div>
+            <div class="num">{{ portfolio.drawdownStats.troughDate || '—' }}</div>
+          </div>
+          <div>
+            <div class="muted">下跌历时</div>
+            <div class="num">{{ portfolio.drawdownStats.days }} 天</div>
+          </div>
+        </div>
+      </template>
+      <div ref="drawdownRef" class="chart"></div>
+    </div>
+
+    <!-- 盈亏日历 -->
+    <div class="card">
+      <div class="section-title" style="margin-bottom: 12px">盈亏日历</div>
+      <div class="row between" style="margin-bottom: 12px">
+        <el-icon @click="prevMonth"><ArrowLeft /></el-icon>
+        <span class="section-title">{{ calendarDate.format('YYYY年M月') }}</span>
+        <el-icon @click="nextMonth"><ArrowRight /></el-icon>
+      </div>
+      <div class="row between" style="margin-bottom: 12px">
+        <div>
+          <span class="muted">本月变动</span>
+          <span class="num" style="margin-left: 8px" :class="pnlClass(monthChange)">
+            {{ monthChange > 0 ? '+' : '' }}{{ fmtMoney(monthChange, 0) }}
+          </span>
+        </div>
+      </div>
+      <div class="calendar-header">
+        <span v-for="w in ['日','一','二','三','四','五','六']" :key="w">{{ w }}</span>
+      </div>
+      <div class="calendar-grid">
+        <div
+          v-for="d in calendarGrid"
+          :key="d.format('YYYY-MM-DD')"
+          class="calendar-cell"
+          :class="{ muted: !d.isSame(calendarDate, 'month'), today: d.isSame(dayjs(), 'day') }"
+        >
+          <div class="cell-date">{{ d.date() }}</div>
+          <div v-if="dailyMap[d.format('YYYY-MM-DD')]" class="cell-pnl num" :class="pnlClass(dailyMap[d.format('YYYY-MM-DD')].amount)">
+            {{ dailyMap[d.format('YYYY-MM-DD')].amount > 0 ? '+' : '' }}{{ fmtNum(dailyMap[d.format('YYYY-MM-DD')].amount, 0) }}
+          </div>
+        </div>
+      </div>
+    </div>
+
     <el-tabs v-model="activeTab" class="analysis-tabs">
       <el-tab-pane label="净值曲线" name="netValue">
         <div ref="netValueRef" class="chart"></div>
@@ -250,71 +293,7 @@ function nextMonth() { calendarDate.value = calendarDate.value.add(1, 'month') }
       <el-tab-pane label="收益曲线" name="curve">
         <div ref="curveRef" class="chart"></div>
       </el-tab-pane>
-      <el-tab-pane label="回撤分析" name="drawdown">
-        <div v-if="portfolio.drawdownStats && portfolio.drawdownStats.maxDrawdownPct !== 0" class="card drawdown-summary">
-          <div class="row between">
-            <div>
-              <div class="muted">最大回撤</div>
-              <div class="num value down">{{ fmtPct(portfolio.drawdownStats.maxDrawdownPct / 100) }}</div>
-            </div>
-            <div>
-              <div class="muted">当前回撤</div>
-              <div class="num value down">{{ portfolio.drawdownStats.recovered ? '已修复' : fmtPct(portfolio.drawdownStats.maxDrawdownPct / 100) }}</div>
-            </div>
-          </div>
-          <div class="row between" style="margin-top: 12px">
-            <div>
-              <div class="muted">峰值日期</div>
-              <div class="num">{{ portfolio.drawdownStats.peakDate || '—' }}</div>
-            </div>
-            <div>
-              <div class="muted">谷底日期</div>
-              <div class="num">{{ portfolio.drawdownStats.troughDate || '—' }}</div>
-            </div>
-            <div>
-              <div class="muted">下跌历时</div>
-              <div class="num">{{ portfolio.drawdownStats.days }} 天</div>
-            </div>
-          </div>
-        </div>
-        <div ref="drawdownRef" class="chart"></div>
-      </el-tab-pane>
-      <el-tab-pane label="盈亏日历" name="calendar">
-        <div class="card">
-          <div class="row between" style="margin-bottom: 12px">
-            <el-icon @click="prevMonth"><ArrowLeft /></el-icon>
-            <span class="section-title">{{ calendarDate.format('YYYY年M月') }}</span>
-            <el-icon @click="nextMonth"><ArrowRight /></el-icon>
-          </div>
-          <div class="row between" style="margin-bottom: 12px">
-            <div>
-              <span class="muted">本月变动</span>
-              <span class="num" style="margin-left: 8px" :class="pnlClass(monthChange)">
-                {{ monthChange > 0 ? '+' : '' }}{{ fmtMoney(monthChange, 0) }}
-              </span>
-            </div>
-          </div>
-          <div class="calendar-header">
-            <span v-for="w in ['日','一','二','三','四','五','六']" :key="w">{{ w }}</span>
-          </div>
-          <div class="calendar-grid">
-            <div
-              v-for="d in calendarGrid"
-              :key="d.format('YYYY-MM-DD')"
-              class="calendar-cell"
-              :class="{ muted: !d.isSame(calendarDate, 'month'), today: d.isSame(dayjs(), 'day') }"
-            >
-              <div class="cell-date">{{ d.date() }}</div>
-              <div v-if="dailyMap[d.format('YYYY-MM-DD')]" class="cell-pnl num" :class="pnlClass(dailyMap[d.format('YYYY-MM-DD')].amount)">
-                {{ dailyMap[d.format('YYYY-MM-DD')].amount > 0 ? '+' : '' }}{{ fmtNum(dailyMap[d.format('YYYY-MM-DD')].amount, 0) }}
-              </div>
-            </div>
-          </div>
-        </div>
-      </el-tab-pane>
-      <el-tab-pane label="持仓分布" name="pie">
-        <div ref="pieRef" class="chart"></div>
-      </el-tab-pane>
+
       <el-tab-pane label="月度" name="monthly">
         <div ref="monthlyRef" class="chart"></div>
         <div v-if="portfolio.monthly.length" class="card">
@@ -370,9 +349,6 @@ function nextMonth() { calendarDate.value = calendarDate.value.add(1, 'month') }
 }
 .chart {
   height: 300px;
-  margin: 8px 8px 0;
-}
-.drawdown-summary {
   margin: 8px 8px 0;
 }
 .calendar-header {
