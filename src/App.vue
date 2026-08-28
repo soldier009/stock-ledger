@@ -1,6 +1,8 @@
 <script setup>
 import { onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import { ElMessageBox } from 'element-plus'
+import { registerSW } from 'virtual:pwa-register'
 import { usePortfolioStore } from './stores/portfolio'
 import { useSettingsStore } from './stores/settings'
 import { debounce } from './utils/debounce'
@@ -11,6 +13,31 @@ const settings = useSettingsStore()
 
 let quoteTimer = null
 let backupTimer = null
+
+// PWA：检测到新版 Service Worker 下载完成后提示刷新，避免用户长期停留在旧缓存版本
+registerSW({
+  immediate: true,
+  onRegisteredSW(_swUrl, registration) {
+    // 首次安装（无旧版控制器接管）不需要提示
+    if (!registration || !navigator.serviceWorker?.controller) return
+    let prompted = false
+    registration.addEventListener('updatefound', () => {
+      const nw = registration.installing
+      if (!nw) return
+      nw.addEventListener('statechange', () => {
+        if (prompted || nw.state !== 'installed') return
+        prompted = true
+        ElMessageBox.confirm(
+          `已下载新版本 v${__APP_VERSION__}，刷新后立即生效。若正在同步/备份，请稍后再刷新。`,
+          '发现新版本',
+          { confirmButtonText: '立即刷新', cancelButtonText: '稍后', distinguishCancelAndClose: true }
+        )
+          .then(() => location.reload())
+          .catch(() => {})
+      })
+    })
+  }
+})
 
 const debouncedBackup = debounce(() => {
   if (settings.github.autoBackup) settings.backupNow(true)
@@ -74,8 +101,10 @@ watch(
   <div v-if="!portfolio.ready" class="splash">
     <div class="splash-logo">📊</div>
     <div class="muted">正在加载数据...</div>
+    <div class="splash-ver">v{{ __APP_VERSION__ }}</div>
   </div>
   <div v-else class="app">
+    <div class="ver-badge">v{{ __APP_VERSION__ }}</div>
     <div class="page-wrap">
       <router-view />
     </div>
@@ -99,3 +128,26 @@ watch(
     </nav>
   </div>
 </template>
+
+<style scoped>
+.ver-badge {
+  position: fixed;
+  right: 10px;
+  top: 6px;
+  z-index: 999;
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 10px;
+  color: rgba(0, 0, 0, 0.4);
+  background: rgba(255, 255, 255, 0.8);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+  pointer-events: none;
+  user-select: none;
+}
+.splash-ver {
+  margin-top: 10px;
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.3);
+}
+</style>

@@ -205,6 +205,7 @@ export async function downloadBackup(token, owner, repo, path) {
   }
   // raw 内容不是有效数据库：部分安卓网络环境（运营商/代理/流量转码）会把二进制响应
   // 转码成文本（如 "SQLite for wasm…"），此时回退到 Contents API 的 base64 字段重新获取
+  let fallbackErr = ''
   try {
     const j = await gh(`/repos/${owner}/${repo}/contents/${encodePath(path)}`, token)
     const b64 = String(j.content || '').replace(/\s/g, '')
@@ -212,10 +213,11 @@ export async function downloadBackup(token, owner, repo, path) {
     if (fb.length && isSqliteBytes(fb)) {
       return { bytes: fb, committedAt }
     }
-  } catch {
-    /* 回退失败时继续走下方明确报错 */
+    if (!fb.length) fallbackErr = 'Contents API 返回的 content 为空'
+  } catch (e) {
+    fallbackErr = e.message || String(e)
   }
   throw new Error(
-    '云端备份文件已损坏或不是有效的数据库（可能被网络代理转码）。请在其他网络/设备上执行一次「立即备份」覆盖云端文件后重试。'
+    `云端备份文件已损坏或不是有效的数据库（可能被网络代理转码）${fallbackErr ? `；base64 回退也失败：${fallbackErr}` : ''}。请在其他网络/设备上执行一次「立即备份」覆盖云端文件后重试。`
   )
 }

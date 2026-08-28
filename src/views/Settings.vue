@@ -22,7 +22,7 @@ const backupStateMap = {
   ok: { text: '备份成功', cls: 'down' },
   error: { text: '备份失败', cls: 'up' }
 }
-const APP_VERSION = '2026.08.28.1200'
+const APP_VERSION = __APP_VERSION__
 
 function escHtml(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -307,7 +307,7 @@ function commitRename(oldTag) {
           <div class="muted">令牌仅保存在本机浏览器数据库中，不会上传到任何第三方。</div>
         </el-collapse-item>
       </el-collapse>
-      <div class="muted" style="margin-top: 8px; font-size: 12px;">版本：{{ APP_VERSION }}</div>
+      <div class="muted" style="margin-top: 8px; font-size: 12px;">版本：v{{ APP_VERSION }}</div>
     </div>
 
     <!-- 报表导出 -->
@@ -427,7 +427,7 @@ function commitRename(oldTag) {
     <!-- 关于 -->
     <div class="section-title">关于</div>
     <div class="card">
-      <div>股票记账本 v1.0.0</div>
+      <div>股票记账本 v{{ APP_VERSION }}</div>
       <div class="muted" style="margin-top: 8px">
         行情来源：A股/港股（腾讯实时行情）、美股与汇率（Yahoo Finance），行情接口为免费公开接口，可能出现延迟或中断，请以实际成交为准。
       </div>
