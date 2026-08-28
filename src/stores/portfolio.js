@@ -265,11 +265,13 @@ export const usePortfolioStore = defineStore('portfolio', {
     // 初始建仓：录入使用本软件之前已持有的股票
     // 与「记录买入」的区别：同时自动生成一笔等额入金记录，
     // 使现金不变、本金增加，净资产/总盈亏/收益率均正确（等价于当初用这笔钱买入）
-    async addInitialPosition({ date, market, code, name, shares, costPrice, broker, note }) {
+    async addInitialPosition({ date, market, code, name, shares, costPrice, broker, note, tag }) {
       const qty = Number(shares) || 0
       const price = Number(costPrice) || 0
       const cost = Math.round(qty * price * 100) / 100
       const b = broker || this.defaultBroker
+      const tagArr = Array.isArray(tag) ? tag.filter(Boolean) : []
+      const tagStr = JSON.stringify(tagArr)
       run(
         'INSERT INTO trades (date, market, code, name, type, shares, price, fee, tax, amount, note, broker) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
         [date, market, code, name || '', 'buy', qty, price, 0, 0, 0, note || '', b]
@@ -285,12 +287,13 @@ export const usePortfolioStore = defineStore('portfolio', {
       if (exist) {
         if (name) run('UPDATE stocks SET name = ? WHERE id = ?', [name, exist.id])
         if (b) run('UPDATE stocks SET broker = ? WHERE id = ?', [b, exist.id])
+        if (tagArr.length) run('UPDATE stocks SET tag = ? WHERE id = ?', [tagStr, exist.id])
       } else {
         run('INSERT INTO stocks (market, code, name, tag, note, broker) VALUES (?,?,?,?,?,?)', [
           market,
           code,
           name || '',
-          '[]',
+          tagStr,
           '',
           b
         ])

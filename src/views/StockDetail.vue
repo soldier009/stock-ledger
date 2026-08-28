@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, reactive } from 'vue'
+import { ref, computed, reactive, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePortfolioStore } from '../stores/portfolio'
@@ -69,6 +69,7 @@ function openEdit(t) {
 }
 
 const infoForm = reactive({ name: '', tag: [], note: '', broker: '' })
+const tagSelect = ref(null)
 
 function openInfoEdit() {
   infoForm.name = stock.value?.name || ''
@@ -150,6 +151,8 @@ function syncTags(v) {
   const arr = Array.isArray(v) ? v : []
   const fresh = arr.filter((x) => x && !settings.tags.includes(x))
   if (fresh.length) settings.saveTags([...settings.tags, ...fresh])
+  // 选中后自动收起下拉，避免面板一直展开
+  nextTick(() => tagSelect.value?.blur?.())
 }
 </script>
 
@@ -288,6 +291,7 @@ function syncTags(v) {
       </el-form-item>
       <el-form-item label="标签（可多选，用于持仓分类）">
         <el-select
+          ref="tagSelect"
           v-model="infoForm.tag"
           multiple
           filterable

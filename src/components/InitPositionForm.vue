@@ -3,12 +3,14 @@ import { reactive, ref, computed, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import dayjs from 'dayjs'
 import { usePortfolioStore } from '../stores/portfolio'
+import { useSettingsStore } from '../stores/settings'
 import { lookupQuote } from '../services/quotes'
 import { fmtNum } from '../utils/format'
 import { DEFAULT_BROKER } from '../constants'
 
 const visible = defineModel({ type: Boolean, default: false })
 const portfolio = usePortfolioStore()
+const settings = useSettingsStore()
 const submitting = ref(false)
 const lookupError = ref('')
 
@@ -20,7 +22,8 @@ const form = reactive({
   costPrice: null,
   date: dayjs().format('YYYY-MM-DD'),
   broker: '',
-  note: ''
+  note: '',
+  tag: []
 })
 
 watch(visible, (v) => {
@@ -34,9 +37,17 @@ watch(visible, (v) => {
     costPrice: null,
     date: dayjs().format('YYYY-MM-DD'),
     broker: portfolio.defaultBroker || DEFAULT_BROKER,
-    note: ''
+    note: '',
+    tag: []
   })
 })
+
+// 选择下拉中新建的标签时，立即并入标签组（无需等待表单提交）
+function syncTags(v) {
+  const arr = Array.isArray(v) ? v : []
+  const fresh = arr.filter((x) => x && !settings.tags.includes(x))
+  if (fresh.length) settings.saveTags([...settings.tags, ...fresh])
+}
 
 const totalCost = computed(() => {
   const q = Number(form.shares) || 0
@@ -101,7 +112,8 @@ async function submit() {
       shares: Number(form.shares),
       costPrice: Number(form.costPrice),
       broker: form.broker || portfolio.defaultBroker || DEFAULT_BROKER,
-      note: form.note.trim()
+      note: form.note.trim(),
+      tag: [...form.tag]
     })
     ElMessage.success(`已录入初始持仓，成本 ¥${fmtNum(totalCost.value, 2)} 已自动计入本金`)
     visible.value = false
@@ -148,6 +160,22 @@ async function submit() {
 
       <el-form-item label="股票名称">
         <el-input v-model="form.name" placeholder="可留空，自动补全" />
+      </el-form-item>
+
+      <el-form-item label="标签（可多选，用于持仓分类）">
+        <el-select
+          v-model="form.tag"
+          multiple
+          filterable
+          allow-create
+          default-first-option
+          :reserve-keyword="false"
+          placeholder="选择或输入新标签后回车"
+          style="width: 100%"
+          @change="syncTags"
+        >
+          <el-option v-for="tg in settings.tags" :key="tg" :label="tg" :value="tg" />
+        </el-select>
       </el-form-item>
 
       <div class="row gap8">
