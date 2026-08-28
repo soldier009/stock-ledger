@@ -4,8 +4,10 @@ import * as echarts from 'echarts'
 import dayjs from 'dayjs'
 import { usePortfolioStore } from '../stores/portfolio'
 import { fmtMoney, fmtNum, fmtPct, pnlClass, marketLabel, fmtTime } from '../utils/format'
+import InitPositionForm from '../components/InitPositionForm.vue'
 
 const portfolio = usePortfolioStore()
+const showInit = ref(false)
 const chartRef = ref(null)
 const pieRef = ref(null)
 let chart = null
@@ -168,6 +170,7 @@ onBeforeUnmount(() => {
       <div class="row between" style="margin-bottom: 6px">
         <div class="row gap8">
           <span class="section-title">净资产</span>
+          <el-button type="primary" size="small" round @click="showInit = true">＋ 新建仓</el-button>
         </div>
         <div class="muted num">
           {{ portfolio.lastQuoteAt ? '更新于 ' + fmtTime(portfolio.lastQuoteAt) : '' }}
@@ -251,6 +254,8 @@ onBeforeUnmount(() => {
       <div ref="pieRef" class="pie-chart"></div>
       <div v-if="!portfolio.positions.length" class="muted" style="text-align: center; padding: 20px">暂无持仓数据</div>
     </div>
+
+    <InitPositionForm v-model="showInit" />
   </div>
 </template>
 

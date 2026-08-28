@@ -262,6 +262,44 @@ export const usePortfolioStore = defineStore('portfolio', {
       await persist()
     },
 
+    // 初始建仓：录入使用本软件之前已持有的股票
+    // 与「记录买入」的区别：同时自动生成一笔等额入金记录，
+    // 使现金不变、本金增加，净资产/总盈亏/收益率均正确（等价于当初用这笔钱买入）
+    async addInitialPosition({ date, market, code, name, shares, costPrice, broker, note }) {
+      const qty = Number(shares) || 0
+      const price = Number(costPrice) || 0
+      const cost = Math.round(qty * price * 100) / 100
+      const b = broker || this.defaultBroker
+      run(
+        'INSERT INTO trades (date, market, code, name, type, shares, price, fee, tax, amount, note, broker) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+        [date, market, code, name || '', 'buy', qty, price, 0, 0, 0, note || '', b]
+      )
+      run('INSERT INTO cash_flows (date, type, amount, note, broker) VALUES (?,?,?,?,?)', [
+        date,
+        'deposit',
+        cost,
+        `初始建仓-自动入金（${name || code}）`,
+        b
+      ])
+      const exist = get('SELECT id FROM stocks WHERE market = ? AND code = ?', [market, code])
+      if (exist) {
+        if (name) run('UPDATE stocks SET name = ? WHERE id = ?', [name, exist.id])
+        if (b) run('UPDATE stocks SET broker = ? WHERE id = ?', [b, exist.id])
+      } else {
+        run('INSERT INTO stocks (market, code, name, tag, note, broker) VALUES (?,?,?,?,?,?)', [
+          market,
+          code,
+          name || '',
+          '[]',
+          '',
+          b
+        ])
+      }
+      await this.loadData()
+      markDirty()
+      await persist()
+    },
+
     // 编辑交易记录
     async updateTrade(id, t) {
       const broker = t.broker || this.defaultBroker
