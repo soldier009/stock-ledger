@@ -217,6 +217,16 @@ export function exportBytes() {
 }
 
 export function loadBytes(bytes) {
+  // 校验备份文件头：内容被篡改/转码（如网络代理返回文本）时给出明确提示，而不是底层 SQLite 的晦涩报错
+  if (!bytes || bytes.length < 16) {
+    throw new Error('备份文件为空或已损坏，无法恢复。请检查云端备份。')
+  }
+  const magic = 'SQLite format 3\u0000'
+  for (let i = 0; i < 16; i++) {
+    if (bytes[i] !== magic.charCodeAt(i)) {
+      throw new Error('备份文件不是有效的数据库（可能被网络代理转码）。请在其他网络/设备上重新备份后重试。')
+    }
+  }
   const ndb = new SQL.Database(bytes)
   ndb.run(SCHEMA)
   if (db) db.close()

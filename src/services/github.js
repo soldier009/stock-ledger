@@ -64,7 +64,29 @@ async function gh(path, token, opts = {}) {
     }
     throw new Error(msg)
   }
-  return res.json()
+  return parseJsonResponse(res)
+}
+
+/** 安全解析 JSON 响应：响应体非 JSON（如被网络代理/转码篡改）时，给出可读错误而不是晦涩的 JSON.parse 报错 */
+async function parseJsonResponse(res) {
+  const text = await res.text()
+  try {
+    return JSON.parse(text)
+  } catch {
+    throw new Error(
+      `GitHub 返回了无法解析的响应（HTTP ${res.status}），内容开头为「${text.slice(0, 40)}」。请检查网络代理/加速设置后重试。`
+    )
+  }
+}
+
+/** 判断字节流是否为有效的 SQLite 数据库文件（文件头固定为 "SQLite format 3\\0"） */
+function isSqliteBytes(bytes) {
+  if (!bytes || bytes.length < 16) return false
+  const magic = 'SQLite format 3\u0000'
+  for (let i = 0; i < 16; i++) {
+    if (bytes[i] !== magic.charCodeAt(i)) return false
+  }
+  return true
 }
 
 /** 对文件路径按段编码，保留斜杠作为目录分隔符（GitHub API 不接受整串编码） */
@@ -176,10 +198,24 @@ export async function downloadBackup(token, owner, repo, path) {
     }
     throw new Error(msg)
   }
-  const buf = await res.arrayBuffer()
-  return {
-    bytes: new Uint8Array(buf),
-    // 服务器返回的 Last-Modified 作为该备份的上传时间兜底
-    committedAt: new Date(res.headers.get('last-modified') || Date.now()).getTime()
+  const committedAt = new Date(res.headers.get('last-modified') || Date.now()).getTime()
+  const bytes = new Uint8Array(await res.arrayBuffer())
+  if (isSqliteBytes(bytes)) {
+    return { bytes, committedAt }
   }
+  // raw 内容不是有效数据库：部分安卓网络环境（运营商/代理/流量转码）会把二进制响应
+  // 转码成文本（如 "SQLite for wasm…"），此时回退到 Contents API 的 base64 字段重新获取
+  try {
+    const j = await gh(`/repos/${owner}/${repo}/contents/${encodePath(path)}`, token)
+    const b64 = String(j.content || '').replace(/\s/g, '')
+    const fb = bytesFromBase64(b64)
+    if (fb.length && isSqliteBytes(fb)) {
+      return { bytes: fb, committedAt }
+    }
+  } catch {
+    /* 回退失败时继续走下方明确报错 */
+  }
+  throw new Error(
+    '云端备份文件已损坏或不是有效的数据库（可能被网络代理转码）。请在其他网络/设备上执行一次「立即备份」覆盖云端文件后重试。'
+  )
 }

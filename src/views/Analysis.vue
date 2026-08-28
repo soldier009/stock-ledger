@@ -133,7 +133,12 @@ function drawYearly() {
 
 const drawMap = { curve: drawCurve, netValue: drawNetValue, monthly: drawMonthly, yearly: drawYearly }
 
-function redraw() { drawMap[activeTab.value]?.() }
+function redraw() {
+  drawMap[activeTab.value]?.()
+  // 非激活 tab 的图表曾以 0 宽度初始化，切换后需 resize 才能撑满容器居中显示
+  const chart = charts[activeTab.value]
+  if (chart) setTimeout(() => chart.resize(), 30)
+}
 
 watch(activeTab, async () => { await nextTick(); redraw() })
 watch(
@@ -348,6 +353,10 @@ function nextMonth() { calendarDate.value = calendarDate.value.add(1, 'month') }
 }
 .analysis-tabs {
   margin-top: -4px;
+}
+.analysis-tabs :deep(.el-tabs__nav) {
+  width: 100%;
+  justify-content: center;
 }
 .chart {
   height: 300px;
