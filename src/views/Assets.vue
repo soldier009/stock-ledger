@@ -48,10 +48,16 @@ const groups = computed(() => {
       map.get(t).push(p)
     }
   }
+  const summarize = (items) => {
+    const mv = items.reduce((a, p) => a + (p.mvCny || 0), 0)
+    const cost = items.reduce((a, p) => a + p.avgCost * p.shares * p.rate, 0)
+    const pnlPct = cost > 0 ? ((mv - cost) / cost) * 100 : null
+    return { mv, pnlPct }
+  }
   const arr = []
-  for (const [tag, items] of map) arr.push({ tag, items })
+  for (const [tag, items] of map) arr.push({ tag, items, ...summarize(items) })
   arr.sort((a, b) => a.tag.localeCompare(b.tag))
-  if (uncat.length) arr.push({ tag: '', items: uncat })
+  if (uncat.length) arr.push({ tag: '', items: uncat, ...summarize(uncat) })
   return arr
 })
 
@@ -59,7 +65,9 @@ function toggleGroup(tag) {
   collapsed.value[tag || ''] = !collapsed.value[tag || '']
 }
 function isCollapsed(tag) {
-  return !!collapsed.value[tag || '']
+  const key = tag || ''
+  // 默认折叠，点击后按显式状态切换
+  return key in collapsed.value ? collapsed.value[key] : true
 }
 
 async function onRefresh() {
@@ -149,6 +157,10 @@ async function onRefresh() {
           <el-icon :class="{ flip: isCollapsed(g.tag) }"><ArrowDown /></el-icon>
           <span class="group-name">{{ g.tag || '未分类' }}</span>
           <span class="group-count">{{ g.items.length }} 只</span>
+          <span class="group-stats">
+            <span class="group-stat"><span class="muted">市值</span> <span class="num">{{ fmtMoney(g.mv, 0) }}</span></span>
+            <span class="group-stat"><span class="muted">盈亏率</span> <span class="num" :class="pnlClass(g.pnlPct)">{{ g.pnlPct === null ? '—' : (g.pnlPct > 0 ? '+' : '') + fmtPct(g.pnlPct) }}</span></span>
+          </span>
         </div>
         <template v-if="!isCollapsed(g.tag)">
           <PositionCard v-for="p in g.items" :key="p.market + ':' + p.code" :p="p" />
@@ -237,11 +249,27 @@ async function onRefresh() {
   font-weight: 700;
 }
 .group-count {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-2);
   background: var(--bg);
   border-radius: 10px;
-  padding: 2px 8px;
+  padding: 1px 7px;
+}
+.group-stats {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.group-stat {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 12px;
+}
+.group-stat .num {
+  font-size: 12px;
+  font-weight: 700;
 }
 .metric-grid {
   display: grid;

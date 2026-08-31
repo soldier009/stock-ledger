@@ -386,7 +386,7 @@ function nextYear() { calendarDate.value = calendarDate.value.add(1, 'year') }
             <el-icon @click="nextMonth"><ArrowRight /></el-icon>
           </div>
         </div>
-        <div class="row between" style="margin-bottom: 8px">
+        <div class="row between" style="margin-bottom: 12px">
           <div>
             <span class="muted">本月变动</span>
             <span class="num" style="margin-left: 8px" :class="pnlClass(monthChange)">
@@ -396,8 +396,6 @@ function nextYear() { calendarDate.value = calendarDate.value.add(1, 'year') }
               {{ monthChangePct > 0 ? '+' : '' }}{{ fmtPct(monthChangePct) }}
             </span>
           </div>
-        </div>
-        <div class="row between" style="margin-bottom: 12px">
           <div>
             <span class="muted">本年变动</span>
             <span class="num" style="margin-left: 8px" :class="pnlClass(yearChange)">
@@ -440,7 +438,7 @@ function nextYear() { calendarDate.value = calendarDate.value.add(1, 'year') }
             <el-icon @click="nextYear"><ArrowRight /></el-icon>
           </div>
         </div>
-        <div class="row between" style="margin-bottom: 12px">
+        <div class="row" style="justify-content: flex-end; margin-bottom: 12px">
           <div>
             <span class="muted">本年变动</span>
             <span class="num" style="margin-left: 8px" :class="pnlClass(yearChange)">
