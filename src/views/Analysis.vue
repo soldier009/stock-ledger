@@ -78,7 +78,6 @@ const ddRanges = [
   { label: '近一月', key: '1m' },
   { label: '近半年', key: '6m' },
   { label: '年初至今', key: 'ytd' },
-  { label: '近一年', key: '1y' },
   { label: '近三年', key: '3y' },
   { label: '近五年', key: '5y' }
 ]
@@ -603,15 +602,16 @@ function nextYear() { calendarDate.value = calendarDate.value.add(1, 'year') }
   gap: 4px;
 }
 .calendar-cell {
-  aspect-ratio: 1;
+  aspect-ratio: 1 / 0.92;
   border-radius: 8px;
   background: #f8fafc;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
-  padding: 2px;
+  font-size: 11px;
+  padding: 1px;
+  overflow: hidden;
 }
 .calendar-cell.muted {
   opacity: 0.35;
@@ -620,21 +620,26 @@ function nextYear() { calendarDate.value = calendarDate.value.add(1, 'year') }
   border: 1.5px solid var(--primary);
 }
 .cell-date {
-  font-size: 12px;
+  font-size: 11px;
+  line-height: 1.1;
 }
 .cell-pnl {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   margin-top: 1px;
+  line-height: 1.1;
+  white-space: nowrap;
 }
 .cell-pct {
-  font-size: 9px;
+  font-size: 8px;
   font-weight: 600;
   margin-top: 1px;
+  line-height: 1.1;
+  white-space: nowrap;
 }
 .cell-empty {
   color: #cbd5e1;
-  font-size: 12px;
+  font-size: 11px;
   margin-top: 4px;
 }
 .pie-switch {
@@ -663,30 +668,37 @@ function nextYear() { calendarDate.value = calendarDate.value.add(1, 'year') }
   gap: 6px;
 }
 .year-cell {
-  aspect-ratio: 1.35;
+  aspect-ratio: 1.1;
   border-radius: 8px;
   background: #f8fafc;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
-  padding: 4px 2px;
+  font-size: 11px;
+  padding: 3px 1px;
+  overflow: hidden;
 }
 .year-cell.today {
   border: 1.5px solid var(--primary);
 }
+.year-cell .cell-pnl {
+  font-size: 10px;
+}
+.year-cell .cell-pct {
+  font-size: 8px;
+}
 .dd-tabs {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   overflow-x: auto;
-  padding-bottom: 4px;
+  padding-bottom: 2px;
 }
 .dd-chip {
   flex-shrink: 0;
-  font-size: 12px;
-  padding: 5px 12px;
-  border-radius: 16px;
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 12px;
   background: #f1f5f9;
   color: var(--text-2);
   cursor: pointer;
