@@ -257,51 +257,75 @@ export function dailyRealized(realizedEvents) {
 
 /**
  * 回撤分析
- * 返回：最大回撤百分比、峰值/谷底日期、下跌历时、是否已修复
+ * 返回：最大回撤百分比、峰值/谷底日期、下跌历时、
+ * 是否已修复、修复日期/修复历时、当前回撤
  */
 export function drawdown(series) {
   if (!series || series.length < 2) {
-    return { maxDrawdownPct: 0, peakDate: null, troughDate: null, days: 0, recovered: true, recoveryDate: null }
+    return {
+      maxDrawdownPct: 0,
+      peakDate: null,
+      troughDate: null,
+      days: 0,
+      recovered: true,
+      recoveryDate: null,
+      recoveryDays: 0,
+      currentDrawdownPct: 0
+    }
   }
   let peak = series[0].netValue
   let peakDate = series[0].date
-  let trough = peak
-  let troughDate = peakDate
   let maxDD = 0
   let maxPeakDate = peakDate
+  let maxPeakValue = peak
   let maxTroughDate = peakDate
-  let inDD = false
 
   for (const p of series) {
     if (p.netValue >= peak) {
       peak = p.netValue
       peakDate = p.date
-      trough = peak
-      troughDate = peakDate
-      inDD = false
-    }
-    if (p.netValue < trough) {
-      trough = p.netValue
-      troughDate = p.date
-      inDD = true
-      const dd = peak > 0 ? (trough - peak) / peak : 0
+    } else {
+      const dd = peak > 0 ? (p.netValue - peak) / peak : 0
       if (dd < maxDD) {
         maxDD = dd
         maxPeakDate = peakDate
-        maxTroughDate = troughDate
+        maxPeakValue = peak
+        maxTroughDate = p.date
       }
     }
   }
 
   const days = dayjs(maxTroughDate).diff(dayjs(maxPeakDate), 'day')
+
+  // 最大回撤修复：谷底之后第一个净值回到峰值(maxPeakValue)的日期
+  let recoveryDate = null
+  let recoveryDays = 0
+  const troughIdx = series.findIndex((p) => p.date === maxTroughDate)
+  for (let i = troughIdx + 1; i < series.length; i++) {
+    if (series[i].netValue >= maxPeakValue) {
+      recoveryDate = series[i].date
+      recoveryDays = dayjs(recoveryDate).diff(dayjs(maxTroughDate), 'day')
+      break
+    }
+  }
+  const recovered = recoveryDate !== null
+
+  // 当前回撤：最新净值相对最近峰值
+  let currentPeak = series[0].netValue
+  for (const p of series) {
+    if (p.netValue > currentPeak) currentPeak = p.netValue
+  }
   const last = series[series.length - 1]
-  const recovered = last.netValue >= peak
+  const currentDrawdownPct = currentPeak > 0 ? ((last.netValue - currentPeak) / currentPeak) * 100 : 0
+
   return {
     maxDrawdownPct: maxDD * 100,
     peakDate: maxPeakDate,
     troughDate: maxTroughDate,
     days,
     recovered,
-    recoveryDate: recovered ? last.date : null
+    recoveryDate,
+    recoveryDays,
+    currentDrawdownPct
   }
 }

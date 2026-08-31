@@ -3,11 +3,13 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import dayjs from 'dayjs'
 import { usePortfolioStore } from '../stores/portfolio'
+import { drawdown } from '../services/calc'
 import { fmtMoney, fmtNum, fmtPct, pnlClass } from '../utils/format'
 
 const portfolio = usePortfolioStore()
 const activeTab = ref('netValue')
 const calendarDate = ref(dayjs())
+const calMode = ref('month')
 
 const curveRef = ref(null)
 const netValueRef = ref(null)
@@ -71,10 +73,41 @@ function drawNetValue() {
   })
 }
 
+// 回撤分析：范围页签
+const ddRanges = [
+  { label: '近一月', key: '1m' },
+  { label: '近半年', key: '6m' },
+  { label: '年初至今', key: 'ytd' },
+  { label: '近一年', key: '1y' },
+  { label: '近三年', key: '3y' },
+  { label: '近五年', key: '5y' }
+]
+const ddRange = ref('1m')
+
+function ddStartOfRange(key) {
+  const today = dayjs()
+  switch (key) {
+    case '1m': return today.subtract(1, 'month')
+    case '6m': return today.subtract(6, 'month')
+    case 'ytd': return today.startOf('year')
+    case '1y': return today.subtract(1, 'year')
+    case '3y': return today.subtract(3, 'year')
+    case '5y': return today.subtract(5, 'year')
+    default: return today.subtract(1, 'month')
+  }
+}
+
+const ddFiltered = computed(() => {
+  const start = ddStartOfRange(ddRange.value)
+  return portfolio.netValue.filter((p) => dayjs(p.date).isAfter(start) || dayjs(p.date).isSame(start, 'day'))
+})
+
+const ddStats = computed(() => drawdown(ddFiltered.value))
+
 function drawDrawdown() {
   const chart = initChart(drawdownRef, 'drawdown')
   if (!chart) return
-  const data = portfolio.netValue
+  const data = ddFiltered.value
   if (!data.length) { chart.clear(); return }
   let peak = data[0].netValue
   const ddSeries = data.map((d) => {
@@ -141,6 +174,7 @@ function redraw() {
 }
 
 watch(activeTab, async () => { await nextTick(); redraw() })
+watch(ddRange, drawDrawdown)
 watch(
   () => [portfolio.monthly.length, portfolio.yearly.length, portfolio.cumulative.length, portfolio.netValue.length],
   () => { redraw(); drawDrawdown() }
@@ -176,8 +210,70 @@ const monthChange = computed(() => {
   return sum
 })
 
+// 本年累计已实现盈亏
+const yearChange = computed(() => {
+  const days = portfolio.dailyPnl.filter((d) => d.date.startsWith(calendarDate.value.format('YYYY')))
+  return days.reduce((a, d) => a + d.amount, 0)
+})
+
+// 某日期之前最近一条净资产（作为变动百分比基准）
+function baseNetBefore(dateStr) {
+  let base = null
+  for (const n of portfolio.netValue) {
+    if (n.date < dateStr) base = n.netValue
+    else break
+  }
+  return base
+}
+
+// 本月变动百分比（基准：月初前一交易日净资产）
+const monthChangePct = computed(() => {
+  const first = calendarDate.value.startOf('month').format('YYYY-MM-DD')
+  const base = baseNetBefore(first)
+  if (!base) return null
+  return (monthChange.value / base) * 100
+})
+
+// 本年变动百分比（基准：年初前一交易日净资产）
+const yearChangePct = computed(() => {
+  const first = calendarDate.value.startOf('year').format('YYYY-MM-DD')
+  const base = baseNetBefore(first)
+  if (!base) return null
+  return (yearChange.value / base) * 100
+})
+
+// 年模式：当年 1-12 月数据（金额 + 当月百分比）
+const yearMonths = computed(() => {
+  const year = calendarDate.value.format('YYYY')
+  const map = {}
+  for (const d of portfolio.dailyPnl) {
+    if (d.date.startsWith(year)) {
+      const k = d.date.slice(5, 7)
+      map[k] = (map[k] || 0) + d.amount
+    }
+  }
+  return Array.from({ length: 12 }, (_, i) => {
+    const k = String(i + 1).padStart(2, '0')
+    const amount = map[k] || 0
+    const first = `${year}-${k}-01`
+    const base = baseNetBefore(first)
+    return { key: k, label: `${i + 1}月`, amount, pct: base ? (amount / base) * 100 : null }
+  })
+})
+
+// 某天盈亏百分比（基准：该日前最近净资产）
+function dayPct(dateStr) {
+  const d = dailyMap.value[dateStr]
+  if (!d) return null
+  const base = baseNetBefore(dateStr)
+  if (!base) return null
+  return (d.amount / base) * 100
+}
+
 function prevMonth() { calendarDate.value = calendarDate.value.subtract(1, 'month') }
 function nextMonth() { calendarDate.value = calendarDate.value.add(1, 'month') }
+function prevYear() { calendarDate.value = calendarDate.value.subtract(1, 'year') }
+function nextYear() { calendarDate.value = calendarDate.value.add(1, 'year') }
 </script>
 
 <template>
@@ -269,68 +365,174 @@ function nextMonth() { calendarDate.value = calendarDate.value.add(1, 'month') }
 
     <!-- 盈亏日历 -->
     <div class="card">
-      <div class="section-title" style="margin-bottom: 12px">盈亏日历</div>
       <div class="row between" style="margin-bottom: 12px">
-        <el-icon @click="prevMonth"><ArrowLeft /></el-icon>
-        <span class="section-title">{{ calendarDate.format('YYYY年M月') }}</span>
-        <el-icon @click="nextMonth"><ArrowRight /></el-icon>
-      </div>
-      <div class="row between" style="margin-bottom: 12px">
-        <div>
-          <span class="muted">本月变动</span>
-          <span class="num" style="margin-left: 8px" :class="pnlClass(monthChange)">
-            {{ monthChange > 0 ? '+' : '' }}{{ fmtMoney(monthChange, 0) }}
-          </span>
+        <div class="section-title">盈亏日历</div>
+        <div class="pie-switch">
+          <span :class="{ active: calMode === 'month' }" @click="calMode = 'month'">月</span>
+          <span :class="{ active: calMode === 'year' }" @click="calMode = 'year'">年</span>
         </div>
       </div>
-      <div class="calendar-header">
-        <span v-for="w in ['日','一','二','三','四','五','六']" :key="w">{{ w }}</span>
-      </div>
-      <div class="calendar-grid">
-        <div
-          v-for="d in calendarGrid"
-          :key="d.format('YYYY-MM-DD')"
-          class="calendar-cell"
-          :class="{ muted: !d.isSame(calendarDate, 'month'), today: d.isSame(dayjs(), 'day') }"
-        >
-          <div class="cell-date">{{ d.date() }}</div>
-          <div v-if="dailyMap[d.format('YYYY-MM-DD')]" class="cell-pnl num" :class="pnlClass(dailyMap[d.format('YYYY-MM-DD')].amount)">
-            {{ dailyMap[d.format('YYYY-MM-DD')].amount > 0 ? '+' : '' }}{{ fmtNum(dailyMap[d.format('YYYY-MM-DD')].amount, 0) }}
+
+      <!-- 月模式：选择月份 + 本月变动 + 日历 -->
+      <template v-if="calMode === 'month'">
+        <div class="calendar-nav">
+          <div class="nav-item">
+            <el-icon @click="prevYear"><ArrowLeft /></el-icon>
+            <span class="nav-year">{{ calendarDate.format('YYYY年') }}</span>
+            <el-icon @click="nextYear"><ArrowRight /></el-icon>
+          </div>
+          <div class="nav-item">
+            <el-icon @click="prevMonth"><ArrowLeft /></el-icon>
+            <span class="nav-month">{{ calendarDate.format('M月') }}</span>
+            <el-icon @click="nextMonth"><ArrowRight /></el-icon>
           </div>
         </div>
-      </div>
+        <div class="row between" style="margin-bottom: 8px">
+          <div>
+            <span class="muted">本月变动</span>
+            <span class="num" style="margin-left: 8px" :class="pnlClass(monthChange)">
+              {{ monthChange > 0 ? '+' : '' }}{{ fmtMoney(monthChange, 0) }}
+            </span>
+            <span v-if="monthChangePct !== null" class="num" style="margin-left: 6px" :class="pnlClass(monthChangePct)">
+              {{ monthChangePct > 0 ? '+' : '' }}{{ fmtPct(monthChangePct) }}
+            </span>
+          </div>
+        </div>
+        <div class="row between" style="margin-bottom: 12px">
+          <div>
+            <span class="muted">本年变动</span>
+            <span class="num" style="margin-left: 8px" :class="pnlClass(yearChange)">
+              {{ yearChange > 0 ? '+' : '' }}{{ fmtMoney(yearChange, 0) }}
+            </span>
+            <span v-if="yearChangePct !== null" class="num" style="margin-left: 6px" :class="pnlClass(yearChangePct)">
+              {{ yearChangePct > 0 ? '+' : '' }}{{ fmtPct(yearChangePct) }}
+            </span>
+          </div>
+        </div>
+        <div class="calendar-header">
+          <span v-for="w in ['日','一','二','三','四','五','六']" :key="w">{{ w }}</span>
+        </div>
+        <div class="calendar-grid">
+          <div
+            v-for="d in calendarGrid"
+            :key="d.format('YYYY-MM-DD')"
+            class="calendar-cell"
+            :class="{ muted: !d.isSame(calendarDate, 'month'), today: d.isSame(dayjs(), 'day') }"
+          >
+            <div class="cell-date">{{ d.date() }}</div>
+            <template v-if="dailyMap[d.format('YYYY-MM-DD')]">
+              <div class="cell-pnl num" :class="pnlClass(dailyMap[d.format('YYYY-MM-DD')].amount)">
+                {{ dailyMap[d.format('YYYY-MM-DD')].amount > 0 ? '+' : '' }}{{ fmtNum(dailyMap[d.format('YYYY-MM-DD')].amount, 0) }}
+              </div>
+              <div v-if="dayPct(d.format('YYYY-MM-DD')) !== null" class="cell-pct num" :class="pnlClass(dayPct(d.format('YYYY-MM-DD')))">
+                {{ dayPct(d.format('YYYY-MM-DD')) > 0 ? '+' : '' }}{{ fmtPct(dayPct(d.format('YYYY-MM-DD'))) }}
+              </div>
+            </template>
+          </div>
+        </div>
+      </template>
+
+      <!-- 年模式：选择年份 + 本年变动 + 全年每月数据 -->
+      <template v-else>
+        <div class="calendar-nav">
+          <div class="nav-item">
+            <el-icon @click="prevYear"><ArrowLeft /></el-icon>
+            <span class="nav-year">{{ calendarDate.format('YYYY年') }}</span>
+            <el-icon @click="nextYear"><ArrowRight /></el-icon>
+          </div>
+        </div>
+        <div class="row between" style="margin-bottom: 12px">
+          <div>
+            <span class="muted">本年变动</span>
+            <span class="num" style="margin-left: 8px" :class="pnlClass(yearChange)">
+              {{ yearChange > 0 ? '+' : '' }}{{ fmtMoney(yearChange, 0) }}
+            </span>
+            <span v-if="yearChangePct !== null" class="num" style="margin-left: 6px" :class="pnlClass(yearChangePct)">
+              {{ yearChangePct > 0 ? '+' : '' }}{{ fmtPct(yearChangePct) }}
+            </span>
+          </div>
+        </div>
+        <div class="year-grid">
+          <div
+            v-for="m in yearMonths"
+            :key="m.key"
+            class="year-cell"
+            :class="{ today: m.key === dayjs().format('MM') && calendarDate.isSame(dayjs(), 'year') }"
+          >
+            <div class="cell-date">{{ m.label }}</div>
+            <template v-if="m.amount !== 0">
+              <div class="cell-pnl num" :class="pnlClass(m.amount)">
+                {{ m.amount > 0 ? '+' : '' }}{{ fmtNum(m.amount, 0) }}
+              </div>
+              <div v-if="m.pct !== null" class="cell-pct num" :class="pnlClass(m.pct)">
+                {{ m.pct > 0 ? '+' : '' }}{{ fmtPct(m.pct) }}
+              </div>
+            </template>
+            <div v-else class="cell-empty">—</div>
+          </div>
+        </div>
+      </template>
     </div>
 
     <!-- 回撤分析 -->
     <div class="card">
       <div class="section-title" style="margin-bottom: 12px">回撤分析</div>
-      <template v-if="portfolio.drawdownStats && portfolio.drawdownStats.maxDrawdownPct !== 0">
-        <div class="row between">
-          <div>
-            <div class="muted">最大回撤</div>
-            <div class="num value down">{{ fmtPct(portfolio.drawdownStats.maxDrawdownPct / 100) }}</div>
-          </div>
-          <div>
-            <div class="muted">当前回撤</div>
-            <div class="num value down">{{ portfolio.drawdownStats.recovered ? '已修复' : fmtPct(portfolio.drawdownStats.maxDrawdownPct / 100) }}</div>
-          </div>
-        </div>
-        <div class="row between" style="margin-top: 12px">
-          <div>
-            <div class="muted">峰值日期</div>
-            <div class="num">{{ portfolio.drawdownStats.peakDate || '—' }}</div>
-          </div>
-          <div>
-            <div class="muted">谷底日期</div>
-            <div class="num">{{ portfolio.drawdownStats.troughDate || '—' }}</div>
-          </div>
-          <div>
-            <div class="muted">下跌历时</div>
-            <div class="num">{{ portfolio.drawdownStats.days }} 天</div>
+      <div class="dd-tabs">
+        <span
+          v-for="r in ddRanges"
+          :key="r.key"
+          class="dd-chip"
+          :class="{ active: ddRange === r.key }"
+          @click="ddRange = r.key"
+        >{{ r.label }}</span>
+      </div>
+      <div class="row between" style="margin: 10px 0 6px">
+        <div>
+          <div class="muted">最大回撤</div>
+          <div class="num value" :class="ddStats.maxDrawdownPct !== 0 ? 'down' : 'flat'">
+            {{ ddStats.maxDrawdownPct !== 0 ? fmtPct(ddStats.maxDrawdownPct) : '—' }}
           </div>
         </div>
-      </template>
+        <div style="text-align: right">
+          <div class="muted">当前回撤</div>
+          <div class="num value" :class="Math.abs(ddStats.currentDrawdownPct) < 0.005 ? 'flat' : 'down'">
+            {{ ddFiltered.length >= 2 ? (Math.abs(ddStats.currentDrawdownPct) < 0.005 ? '已修复' : fmtPct(ddStats.currentDrawdownPct)) : '—' }}
+          </div>
+        </div>
+      </div>
       <div ref="drawdownRef" class="chart"></div>
+    </div>
+
+    <!-- 最大回撤事件 -->
+    <div class="card">
+      <div class="section-title" style="margin-bottom: 12px">最大回撤事件</div>
+      <div v-if="ddFiltered.length >= 2 && ddStats.maxDrawdownPct !== 0" class="event-grid">
+        <div>
+          <div class="muted">百分比</div>
+          <div class="num down">{{ fmtPct(ddStats.maxDrawdownPct) }}</div>
+        </div>
+        <div>
+          <div class="muted">峰值日期</div>
+          <div class="num">{{ ddStats.peakDate || '—' }}</div>
+        </div>
+        <div>
+          <div class="muted">谷底日期</div>
+          <div class="num">{{ ddStats.troughDate || '—' }}</div>
+        </div>
+        <div>
+          <div class="muted">下跌历时</div>
+          <div class="num">{{ ddStats.days }} 天</div>
+        </div>
+        <div>
+          <div class="muted">修复日期</div>
+          <div class="num">{{ ddStats.recovered ? ddStats.recoveryDate : '未修复' }}</div>
+        </div>
+        <div>
+          <div class="muted">修复历时</div>
+          <div class="num">{{ ddStats.recovered ? ddStats.recoveryDays + ' 天' : '—' }}</div>
+        </div>
+      </div>
+      <div v-else class="muted" style="text-align: center; padding: 12px">暂无回撤数据</div>
     </div>
   </div>
 </template>
@@ -361,6 +563,31 @@ function nextMonth() { calendarDate.value = calendarDate.value.add(1, 'month') }
 .chart {
   height: 300px;
   margin: 4px 0 0;
+}
+.calendar-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+.nav-item .el-icon {
+  color: var(--text-2);
+}
+.nav-year {
+  font-size: 16px;
+  font-weight: 700;
+}
+.nav-month {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--primary);
 }
 .calendar-header {
   display: grid;
@@ -399,5 +626,84 @@ function nextMonth() { calendarDate.value = calendarDate.value.add(1, 'month') }
   font-size: 11px;
   font-weight: 700;
   margin-top: 1px;
+}
+.cell-pct {
+  font-size: 9px;
+  font-weight: 600;
+  margin-top: 1px;
+}
+.cell-empty {
+  color: #cbd5e1;
+  font-size: 12px;
+  margin-top: 4px;
+}
+.pie-switch {
+  display: flex;
+  gap: 4px;
+  background: var(--bg, #f1f5f9);
+  border-radius: 16px;
+  padding: 3px;
+}
+.pie-switch span {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 14px;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.pie-switch span.active {
+  background: #fff;
+  color: #dc2626;
+  font-weight: 600;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+.year-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+.year-cell {
+  aspect-ratio: 1.35;
+  border-radius: 8px;
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  padding: 4px 2px;
+}
+.year-cell.today {
+  border: 1.5px solid var(--primary);
+}
+.dd-tabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.dd-chip {
+  flex-shrink: 0;
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 16px;
+  background: #f1f5f9;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.dd-chip.active {
+  background: #fdecec;
+  color: #dc2626;
+  font-weight: 600;
+}
+.event-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px 8px;
+}
+.event-grid .num {
+  font-size: 13px;
+  font-weight: 600;
+  margin-top: 2px;
 }
 </style>

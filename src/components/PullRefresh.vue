@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 
 const props = defineProps({
   loading: { type: Boolean, default: false },
@@ -38,6 +38,14 @@ function onTouchEnd() {
   }
 }
 
+// 刷新完成后复位下拉偏移，避免指示器停留在「下拉 0%」卡住收不回去
+watch(
+  () => props.loading,
+  (v) => {
+    if (!v && pull.value > 0) pull.value = 0
+  }
+)
+
 onMounted(() => {
   const el = wrap.value
   el.addEventListener('touchstart', onTouchStart, { passive: true })
@@ -58,7 +66,7 @@ onBeforeUnmount(() => {
   <div ref="wrap" class="pull-wrap">
     <div class="pull-indicator" :style="{ height: pull + 'px' }">
       <span v-if="!loading && pull === 0">下拉刷新行情</span>
-      <span v-else-if="!loading" class="num">下拉 {{ Math.round((threshold - pull) / (threshold / 100)) }}%</span>
+      <span v-else-if="!loading" class="num">下拉 {{ Math.round((pull / threshold) * 100) }}%</span>
       <span v-else class="num">正在刷新...</span>
     </div>
     <div class="pull-content" :style="{ transform: `translateY(${pull}px)` }">

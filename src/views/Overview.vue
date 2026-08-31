@@ -3,7 +3,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import dayjs from 'dayjs'
 import { usePortfolioStore } from '../stores/portfolio'
-import { fmtMoney, fmtNum, fmtPct, pnlClass, marketLabel, fmtTime } from '../utils/format'
+import { fmtMoney, fmtNum, fmtPct, pnlClass, marketLabel, fmtTime, parseTags } from '../utils/format'
 import InitPositionForm from '../components/InitPositionForm.vue'
 
 const portfolio = usePortfolioStore()
@@ -47,7 +47,7 @@ const curveChange = computed(() => {
   if (!s.length) return { value: 0, pct: 0 }
   const first = s[0].netValue
   const last = s[s.length - 1].netValue
-  return { value: last - first, pct: first > 0 ? (last - first) / first : 0 }
+  return { value: last - first, pct: first > 0 ? ((last - first) / first) * 100 : 0 }
 })
 
 const latest = computed(() => {
@@ -66,6 +66,26 @@ const allocation = computed(() => {
 })
 
 const totalAllocation = computed(() => allocation.value.reduce((a, b) => a + b.value, 0))
+
+// 当前持仓成本（与资产页口径一致）
+const totalCost = computed(() => portfolio.positions.reduce((a, p) => a + p.avgCost * p.shares * p.rate, 0))
+
+// 持仓分布：按标签 / 按个股
+const pieMode = ref('tag')
+const pieData = computed(() => {
+  if (pieMode.value === 'tag') {
+    const groups = {}
+    for (const p of portfolio.positions) {
+      const tags = parseTags(p.tag)
+      const key = tags.length ? tags[0] : '未分类'
+      groups[key] = (groups[key] || 0) + p.mvCny
+    }
+    return Object.entries(groups)
+      .map(([name, value]) => ({ name, value: Math.round(value * 100) / 100 }))
+      .sort((a, b) => b.value - a.value)
+  }
+  return portfolio.positions.map((p) => ({ name: p.name || p.code, value: Math.round(p.mvCny * 100) / 100 }))
+})
 
 function draw() {
   if (!chartRef.value) return
@@ -111,11 +131,11 @@ function draw() {
   })
 }
 
-// 持仓分布（按个股）
+// 持仓分布（按标签 / 按个股）
 function drawPie() {
   if (!pieRef.value) return
   if (!pieChart) pieChart = echarts.init(pieRef.value)
-  const data = portfolio.positions.map((p) => ({ name: p.name || p.code, value: Math.round(p.mvCny * 100) / 100 }))
+  const data = pieData.value
   const total = data.reduce((a, b) => a + b.value, 0)
   if (!data.length) { pieChart.clear(); return }
   pieChart.setOption({
@@ -141,7 +161,7 @@ watch([() => filteredSeries.value.length, () => portfolio.netValue.length], asyn
 watch(activeRange, draw)
 
 watch(
-  () => portfolio.positions.map((p) => Math.round(p.mvCny)).join(','),
+  [() => portfolio.positions.map((p) => Math.round(p.mvCny)).join(','), pieMode],
   async () => { await nextTick(); drawPie() }
 )
 
@@ -204,15 +224,23 @@ onBeforeUnmount(() => {
     <div class="metrics card">
       <div class="metric-grid">
         <div>
-          <div class="muted">累计盈亏</div>
-          <div class="num value" :class="pnlClass(portfolio.totals.totalPnl)">
-            {{ portfolio.totals.totalPnl > 0 ? '+' : '' }}{{ fmtMoney(portfolio.totals.totalPnl, 0) }}
+          <div class="muted">成本</div>
+          <div class="num value">{{ fmtMoney(totalCost, 0) }}</div>
+        </div>
+        <div>
+          <div class="muted">持仓市值</div>
+          <div class="num value">{{ fmtMoney(portfolio.totals.mvTotal, 0) }}</div>
+        </div>
+        <div>
+          <div class="muted">浮动盈亏</div>
+          <div class="num value" :class="pnlClass(portfolio.totals.floating)">
+            {{ portfolio.totals.floating > 0 ? '+' : '' }}{{ fmtMoney(portfolio.totals.floating, 0) }}
           </div>
         </div>
         <div>
-          <div class="muted">收益率</div>
-          <div class="num value" :class="pnlClass(portfolio.totals.totalPnl)">
-            {{ portfolio.totals.totalPnlPct === null ? '—' : (portfolio.totals.totalPnlPct > 0 ? '+' : '') + fmtPct(portfolio.totals.totalPnlPct) }}
+          <div class="muted">已实现盈亏</div>
+          <div class="num value" :class="pnlClass(portfolio.totals.totalRealized)">
+            {{ portfolio.totals.totalRealized > 0 ? '+' : '' }}{{ fmtMoney(portfolio.totals.totalRealized, 0) }}
           </div>
         </div>
         <div>
@@ -222,8 +250,10 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div>
-          <div class="muted">持仓市值</div>
-          <div class="num value">{{ fmtMoney(portfolio.totals.mvTotal, 0) }}</div>
+          <div class="muted">收益率</div>
+          <div class="num value" :class="pnlClass(portfolio.totals.totalPnl)">
+            {{ portfolio.totals.totalPnlPct === null ? '—' : (portfolio.totals.totalPnlPct > 0 ? '+' : '') + fmtPct(portfolio.totals.totalPnlPct) }}
+          </div>
         </div>
       </div>
     </div>
@@ -250,7 +280,13 @@ onBeforeUnmount(() => {
 
     <!-- 持仓分布 -->
     <div class="card">
-      <div class="section-title" style="margin-bottom: 12px">持仓分布</div>
+      <div class="row between" style="margin-bottom: 12px">
+        <div class="section-title">持仓分布</div>
+        <div class="pie-switch">
+          <span :class="{ active: pieMode === 'tag' }" @click="pieMode = 'tag'">按标签</span>
+          <span :class="{ active: pieMode === 'stock' }" @click="pieMode = 'stock'">按个股</span>
+        </div>
+      </div>
       <div ref="pieRef" class="pie-chart"></div>
       <div v-if="!portfolio.positions.length" class="muted" style="text-align: center; padding: 20px">暂无持仓数据</div>
     </div>
@@ -315,5 +351,25 @@ onBeforeUnmount(() => {
 }
 .alloc-item {
   font-size: 13px;
+}
+.pie-switch {
+  display: flex;
+  gap: 4px;
+  background: var(--bg, #f1f5f9);
+  border-radius: 16px;
+  padding: 3px;
+}
+.pie-switch span {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 14px;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.pie-switch span.active {
+  background: #fff;
+  color: #dc2626;
+  font-weight: 600;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
 }
 </style>

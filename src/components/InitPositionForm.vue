@@ -1,5 +1,5 @@
 <script setup>
-import { reactive, ref, computed, watch } from 'vue'
+import { reactive, ref, computed, watch, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import dayjs from 'dayjs'
 import { usePortfolioStore } from '../stores/portfolio'
@@ -13,6 +13,7 @@ const portfolio = usePortfolioStore()
 const settings = useSettingsStore()
 const submitting = ref(false)
 const lookupError = ref('')
+const tagSelect = ref(null)
 
 const form = reactive({
   market: 'A',
@@ -47,6 +48,8 @@ function syncTags(v) {
   const arr = Array.isArray(v) ? v : []
   const fresh = arr.filter((x) => x && !settings.tags.includes(x))
   if (fresh.length) settings.saveTags([...settings.tags, ...fresh])
+  // 选中后自动收起下拉，避免面板一直展开
+  nextTick(() => tagSelect.value?.blur?.())
 }
 
 const totalCost = computed(() => {
@@ -164,6 +167,7 @@ async function submit() {
 
       <el-form-item label="标签（可多选，用于持仓分类）">
         <el-select
+          ref="tagSelect"
           v-model="form.tag"
           multiple
           filterable
