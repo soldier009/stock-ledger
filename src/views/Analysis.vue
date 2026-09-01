@@ -363,7 +363,7 @@ function nextYear() { calendarDate.value = calendarDate.value.add(1, 'year') }
     </div>
 
     <!-- 盈亏日历 -->
-    <div class="card">
+    <div class="card calendar-card">
       <div class="row between" style="margin-bottom: 12px">
         <div class="section-title">盈亏日历</div>
         <div class="pie-switch">
@@ -715,5 +715,40 @@ function nextYear() { calendarDate.value = calendarDate.value.add(1, 'year') }
   font-size: 13px;
   font-weight: 600;
   margin-top: 2px;
+}
+
+/* 盈亏日历：标题「盈亏日历」、日期、星期几保持原字号，其余调小一号 */
+.calendar-card .muted {
+  font-size: 11px;
+}
+.calendar-card .num {
+  font-size: 13px;
+}
+.calendar-card .nav-year {
+  font-size: 15px;
+}
+.calendar-card .nav-month {
+  font-size: 14px;
+}
+.calendar-card .pie-switch span {
+  font-size: 11px;
+}
+.calendar-card .cell-pnl {
+  font-size: 9px;
+}
+.calendar-card .cell-pct {
+  font-size: 7px;
+}
+.calendar-card .cell-empty {
+  font-size: 10px;
+}
+.calendar-card .year-cell {
+  font-size: 10px;
+}
+.calendar-card .year-cell .cell-pnl {
+  font-size: 9px;
+}
+.calendar-card .year-cell .cell-pct {
+  font-size: 7px;
 }
 </style>

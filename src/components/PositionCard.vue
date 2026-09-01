@@ -90,11 +90,11 @@ function goDetail() {
   flex-wrap: wrap;
 }
 .pos-name {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
 }
 .price {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
   text-align: right;
 }
@@ -113,6 +113,12 @@ function goDetail() {
 }
 .grid > div > .num {
   margin-top: 3px;
-  font-size: 13px;
+  font-size: 12px;
+}
+.pos-card .muted {
+  font-size: 11px;
+}
+.pos-card :deep(.el-tag) {
+  font-size: 11px;
 }
 </style>

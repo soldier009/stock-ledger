@@ -134,7 +134,7 @@ async function onRefresh() {
     <div class="cash-card card">
       <div class="row between">
         <div class="section-title" style="margin-bottom: 0">资金账户</div>
-        <div class="muted" style="font-size: 12px">总可用 {{ fmtMoney(totals.cash, 2) }}</div>
+        <div class="muted" style="font-size: 11px">总可用 {{ fmtMoney(totals.cash, 2) }}</div>
       </div>
       <div class="broker-row" v-for="b in portfolio.brokers" :key="b">
         <div class="flex1">
@@ -198,9 +198,22 @@ async function onRefresh() {
   padding-bottom: 16px;
 }
 .section-title {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 700;
   margin-bottom: 12px;
+}
+/* 资产页文字整体调小一号 */
+.page-title {
+  font-size: 19px;
+}
+.muted {
+  font-size: 11px;
+}
+.empty-tip {
+  font-size: 13px;
+}
+:deep(.el-button--small) {
+  font-size: 11px;
 }
 .cash-card {
   margin-bottom: 12px;
@@ -217,11 +230,11 @@ async function onRefresh() {
   border-top: 1px solid var(--border, #f1f5f9);
 }
 .broker-name {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
 }
 .broker-cash {
-  font-size: 20px;
+  font-size: 19px;
   font-weight: 700;
   margin-top: 2px;
 }
@@ -245,11 +258,11 @@ async function onRefresh() {
   transform: rotate(-90deg);
 }
 .group-name {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 700;
 }
 .group-count {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-2);
   background: var(--bg);
   border-radius: 10px;
@@ -265,10 +278,10 @@ async function onRefresh() {
   display: flex;
   align-items: baseline;
   gap: 4px;
-  font-size: 12px;
+  font-size: 11px;
 }
 .group-stat .num {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
 }
 .metric-grid {
@@ -277,7 +290,7 @@ async function onRefresh() {
   gap: 14px 8px;
 }
 .metric-grid .value {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 700;
   margin-top: 4px;
 }
