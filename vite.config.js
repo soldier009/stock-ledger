@@ -7,7 +7,8 @@ import { readFileSync } from 'node:fs'
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf-8'))
 
 export default defineConfig({
-  base: '/stock-ledger/',
+  // 相对路径构建：同一份产物既能部署在域名根目录（CloudBase），也能部署在子目录（GitHub Pages）
+  base: './',
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version)
   },
@@ -15,7 +16,7 @@ export default defineConfig({
     vue(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.svg', 'icons/icon-512.png'],
+      includeAssets: ['favicon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png', 'icons/apple-touch-icon.png'],
       manifest: {
         name: '股票记账本',
         short_name: '记账本',
@@ -24,12 +25,13 @@ export default defineConfig({
         theme_color: '#0f9d78',
         background_color: '#f5f7fa',
         display: 'standalone',
-        start_url: '/stock-ledger/',
-        scope: '/stock-ledger/',
+        orientation: 'portrait',
+        start_url: './',
+        scope: './',
         icons: [
+          { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png' },
           { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' },
-          { src: 'icons/icon-512.png', sizes: '192x192', type: 'image/png' },
-          { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
+          { src: 'icons/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
         ]
       },
       workbox: {

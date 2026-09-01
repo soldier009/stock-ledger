@@ -432,11 +432,19 @@ function commitRename(oldTag) {
         行情来源：A股/港股（腾讯实时行情）、美股与汇率（Yahoo Finance），行情接口为免费公开接口，可能出现延迟或中断，请以实际成交为准。
       </div>
       <div class="muted" style="margin-top: 6px">数据保存在本机浏览器（IndexedDB），通过 GitHub 私有仓库多端自动同步，手机与电脑可共同使用同一份数据。</div>
+      <div style="margin-top: 10px">
+        <router-link to="/privacy" class="privacy-link">隐私政策</router-link>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
+.privacy-link {
+  font-size: 13px;
+  color: var(--primary, #0f9d78);
+  text-decoration: none;
+}
 .section-title {
   font-size: 13px;
   font-weight: 600;

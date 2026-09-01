@@ -4,25 +4,20 @@
 
 ## 在线访问
 
-**生产环境（CloudBase 静态托管）**
+**生产环境（GitHub Pages）**
 
 ```
-https://stock-ledger-d0ghy7wiia67bb112-1301186596.tcloudbaseapp.com/
+https://soldier009.github.io/stock-ledger/
 ```
 
-手机端：浏览器打开上述网址 → 「添加到主屏幕」即可全屏使用（PWA 支持离线缓存）。
+## 手机安装（PWA）
 
-## CloudBase 资源
+用手机浏览器打开上面的网址，添加到桌面后即可全屏使用：没有浏览器地址栏、支持离线打开、安卓上按返回键不会误退出。
 
-| 项目 | 值 |
-| --- | --- |
-| 环境 ID | `stock-ledger-d0ghy7wiia67bb112` |
-| 环境别名 | `stock-ledger` |
-| 区域 | `ap-shanghai` |
-| 套餐 | 体验版（baas_trial） |
-| 静态托管域名 | `stock-ledger-d0ghy7wiia67bb112-1301186596.tcloudbaseapp.com` |
-| 存储桶 | `0077-static-stock-ledger-d0ghy7wiia67bb112-1301186596` |
-| 索引文档 | `index.html` |
+- **安卓（Chrome）**：右上角菜单 → 添加到主屏幕 / 安装应用
+- **iPhone（Safari）**：底部「分享」按钮 → 向下找到「添加到主屏幕」
+
+> iPhone 必须使用 Safari 添加，Chrome / 微信内置浏览器不支持安装。
 
 ## 本地开发
 
@@ -35,11 +30,12 @@ npm run preview  # 本地预览构建产物
 
 ## 部署 / 更新
 
-前端为纯静态构建，无后端服务。更新步骤：
+前端为纯静态构建，无后端服务，部署在 GitHub Pages（`gh-pages` 分支）。构建使用相对路径，产物可同时适用于域名根目录或子目录。
 
-1. `npm run build` 重新构建（输出到 `dist/`）
-2. 将 `dist/` 全部内容上传到 CloudBase 静态托管根目录（覆盖旧文件）
-3. 访问线上 URL 时建议追加随机参数（如 `?v=日期`）绕过 CDN 缓存
+- **自动部署（推荐）**：推送到 `main` 分支后，GitHub Actions（`.github/workflows/deploy.yml`）自动构建并发布，约 1 分钟生效
+- **手动部署**：本地执行 `.\deploy.ps1`（需先 `npm run build`），脚本会把 `dist/` 推送到 `gh-pages` 分支
+
+线上如遇旧版本残留，在网址后追加随机参数（如 `?v=日期`）绕过缓存；应用内检测到新版本会主动提示刷新。
 
 ## 数据说明
 
@@ -47,3 +43,4 @@ npm run preview  # 本地预览构建产物
 - 跨设备同步方式：
   - **GitHub 私有仓库多端同步**：在「设置 → 多端同步与云备份」配置仓库地址与 PAT 令牌（需 `repo` 权限）。在**每台设备**上填入**相同的仓库地址与令牌**后，打开应用或切回前台会自动同步（云端更新 → 下载，本地更新 → 上传），手机与电脑共同使用同一份数据
   - **本地备份文件**：「设置 → 下载本地备份（.db）」→ 另一台设备「导入备份文件」，用于手动迁移或存档
+- **注意**：卸载应用或清除浏览器数据会导致本地数据丢失，请开启 GitHub 云备份或定期导出备份文件

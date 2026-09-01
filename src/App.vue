@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import { registerSW } from 'virtual:pwa-register'
@@ -10,6 +10,7 @@ import { debounce } from './utils/debounce'
 const route = useRoute()
 const portfolio = usePortfolioStore()
 const settings = useSettingsStore()
+const online = ref(navigator.onLine)
 
 let quoteTimer = null
 let backupTimer = null
@@ -70,6 +71,10 @@ function onVisibility() {
   }
 }
 
+function onNetChange() {
+  online.value = navigator.onLine
+}
+
 onMounted(async () => {
   await portfolio.init()
   startQuoteTimer()
@@ -80,6 +85,8 @@ onMounted(async () => {
   }, 6 * 3600 * 1000)
   window.addEventListener('focus', onFocus)
   document.addEventListener('visibilitychange', onVisibility)
+  window.addEventListener('online', onNetChange)
+  window.addEventListener('offline', onNetChange)
 })
 
 onBeforeUnmount(() => {
@@ -87,6 +94,8 @@ onBeforeUnmount(() => {
   clearInterval(backupTimer)
   window.removeEventListener('focus', onFocus)
   document.removeEventListener('visibilitychange', onVisibility)
+  window.removeEventListener('online', onNetChange)
+  window.removeEventListener('offline', onNetChange)
 })
 
 watch(() => settings.refreshMinutes, () => startQuoteTimer())
@@ -103,7 +112,8 @@ watch(
     <div class="muted">正在加载数据...</div>
     <div class="splash-ver">v{{ __APP_VERSION__ }}</div>
   </div>
-  <div v-else class="app">
+  <div v-else class="app" :class="{ 'has-offline-bar': !online }">
+    <div v-if="!online" class="offline-bar">当前离线：行情刷新与云同步暂不可用</div>
     <div class="ver-badge">v{{ __APP_VERSION__ }}</div>
     <div class="page-wrap">
       <router-view />
@@ -144,6 +154,21 @@ watch(
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
   pointer-events: none;
   user-select: none;
+}
+.offline-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  background: #f59e0b;
+  color: #fff;
+  font-size: 12px;
+  text-align: center;
+  padding: calc(6px + env(safe-area-inset-top)) 10px 6px;
+}
+.has-offline-bar .ver-badge {
+  top: calc(32px + env(safe-area-inset-top));
 }
 .splash-ver {
   margin-top: 10px;

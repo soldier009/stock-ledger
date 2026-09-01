@@ -3,5 +3,9 @@ dist
 .codebuddy
 preview*.log
 preview*.err.log
+build.log
+build.err
 .DS_Store
 *.local
+# 图标候选稿（本地留存，便于日后更换图标，不入库）
+generated-icons/
