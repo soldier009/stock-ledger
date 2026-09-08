@@ -5,7 +5,7 @@ import dayjs from 'dayjs'
 import { usePortfolioStore } from '../stores/portfolio'
 import { useSettingsStore } from '../stores/settings'
 import { lookupQuote } from '../services/quotes'
-import { fmtNum, parseTags } from '../utils/format'
+import { fmtNum, parseTags, marketLabel } from '../utils/format'
 import { DEFAULT_BROKER } from '../constants'
 
 const visible = defineModel({ type: Boolean, default: false })
@@ -20,6 +20,8 @@ const defaultBroker = () => portfolio.defaultBroker || DEFAULT_BROKER
 const portfolio = usePortfolioStore()
 const settings = useSettingsStore()
 const submitting = ref(false)
+// 从证券详情页进入的新增记账：证券身份（市场/代码/名称/券商/标签）由 preset 锁定，无需也不可修改
+const locked = computed(() => !props.trade && !!props.preset)
 const title = ref('记一笔')
 const lookupError = ref('')
 const tagSelect = ref(null)
@@ -267,8 +269,13 @@ function reset() {
         </el-radio-group>
       </el-form-item>
 
+      <!-- 详情页记一笔：证券已锁定，仅作展示，供确认记账对象 -->
+      <div v-if="locked" class="target-line">
+        为 <b>{{ form.name || '该证券' }}</b>（{{ marketLabel(form.market) }} · {{ form.code }}）记一笔 · 所属券商 {{ form.broker }}
+      </div>
+
       <div class="row gap8">
-        <el-form-item label="市场" class="flex1">
+        <el-form-item v-if="!locked" label="市场" class="flex1">
           <el-select v-model="form.market" style="width: 100%">
             <el-option label="A股" value="A" />
             <el-option label="港股" value="HK" />
@@ -280,7 +287,7 @@ function reset() {
         </el-form-item>
       </div>
 
-      <el-form-item label="证券代码">
+      <el-form-item v-if="!locked" label="证券代码">
         <div class="row gap8" style="width: 100%">
           <el-input
             v-model="form.code"
@@ -293,11 +300,11 @@ function reset() {
         <div v-if="lookupError" class="lookup-error">{{ lookupError }}</div>
       </el-form-item>
 
-      <el-form-item label="股票名称">
+      <el-form-item v-if="!locked" label="股票名称">
         <el-input v-model="form.name" placeholder="可留空，自动补全" />
       </el-form-item>
 
-      <el-form-item label="所属券商">
+      <el-form-item v-if="!locked" label="所属券商">
         <div class="row gap8" style="width: 100%">
           <el-select v-model="form.broker" style="flex: 1" placeholder="选择券商">
             <el-option v-for="b in portfolio.brokers" :key="b" :label="b" :value="b" />
@@ -307,7 +314,7 @@ function reset() {
         <div class="muted" style="margin-top: 4px">买卖资金只在该券商账户内流动（可在设置中管理券商）</div>
       </el-form-item>
 
-      <el-form-item label="标签（可多选，用于持仓分类）">
+      <el-form-item v-if="!locked" label="标签（可多选，用于持仓分类）">
         <el-select
           ref="tagSelect"
           v-model="form.tag"
@@ -400,5 +407,16 @@ function reset() {
   color: #e63946;
   font-size: 12px;
   margin-top: 4px;
+}
+.target-line {
+  background: #f1f5f9;
+  border-radius: 8px;
+  padding: 9px 12px;
+  margin-bottom: 4px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.target-line b {
+  color: var(--text-1);
 }
 </style>
