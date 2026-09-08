@@ -9,3 +9,6 @@ build.err
 *.local
 # 图标候选稿（本地留存，便于日后更换图标，不入库）
 generated-icons/
+# 本地 http 静态服务日志（不入库）
+http-local.err
+http-local.log

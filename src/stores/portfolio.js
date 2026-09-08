@@ -295,7 +295,33 @@ export const usePortfolioStore = defineStore('portfolio', {
       const today = new Date().toISOString().slice(0, 10)
       this.netValue = netValueSeries(this.trades, this.cashFlows, currentPrices, r, today, this.klineCache.bySymbol)
       this.drawdownStats = drawdown(this.netValue)
-      this.dailyHolding = dailyHoldingPnl(this.trades, this.klineCache.bySymbol, this.rates)
+      let rows = dailyHoldingPnl(this.trades, this.klineCache.bySymbol, this.rates)
+      // “今天”这一格单独用实时行情口径：Σ 每只当前持仓 (现价 − 昨收) × 现持股
+      // 与顶部「今日盈亏」指标同源，不区分当日是否买卖、不依赖今日日K是否已更新。
+      const td = fmtDay(new Date())
+      let dayAmt = 0
+      let dayBase = 0
+      let dayReady = false
+      let quoteToday = false
+      for (const p of this.positions) {
+        const q = p.quote || null
+        const prev = q && q.prevClose
+        if (!prev || prev <= 0 || p.day === null || p.dayCny === null) continue
+        dayReady = true
+        dayAmt += p.dayCny
+        dayBase += prev * p.shares * p.rate
+        if (q.time && String(q.time).replace(/[-: ]/g, '').startsWith(td.replace(/-/g, ''))) quoteToday = true
+      }
+      // 只在“今天是交易日”（有当日行情或日K已含今日）时写入实时口径，避免周末/假期重复上一天盈亏
+      const hasTodayBar = Object.values(this.klineCache.bySymbol || {}).some(
+        (m) => m && m.days && m.days.length && m.days[m.days.length - 1][0] === td
+      )
+      if (dayReady && (quoteToday || hasTodayBar)) {
+        rows = rows.filter((x) => x.date !== td)
+        rows.push({ date: td, amount: dayAmt, base: dayBase })
+        rows.sort((a, b) => (a.date < b.date ? -1 : 1))
+      }
+      this.dailyHolding = rows
     },
 
     recomputeDailyHolding() {

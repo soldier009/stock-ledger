@@ -409,6 +409,69 @@ export function dailyHoldingPnl(trades, klines, rates) {
 }
 
 /**
+ * 指定某一天的持仓盈亏按股明细（口径与 dailyHoldingPnl 完全一致）：
+ *   每股 = (当日收盘 − 前收盘) × 当日盘前持股数 × 汇率
+ * 仅返回该日盘前有持仓、且前后两个交易日收盘价都在行情缓存中的股票，
+ * 各行金额合计恰好等于 dailyHoldingPnl 中该日 amount。
+ * @returns {Array} [{ market, code, name, shares, prevClose, close, changePct, amount }]
+ */
+export function holdingDayDetail(trades, klines, rates, date) {
+  const bySym = new Map()
+  for (const t of trades || []) {
+    const key = t.market + ':' + t.code
+    if (!bySym.has(key)) bySym.set(key, [])
+    bySym.get(key).push(t)
+  }
+  for (const list of bySym.values()) {
+    list.sort((a, b) => (a.date === b.date ? (a.id || 0) - (b.id || 0) : a.date.localeCompare(b.date)))
+  }
+  const applyTrade = (t, shares) => {
+    if (t.type === 'buy' || t.type === 'rights' || t.type === 'gift') return shares + (Number(t.shares) || 0)
+    if (t.type === 'sell') return Math.max(0, shares - (Number(t.shares) || 0))
+    return shares
+  }
+
+  const out = []
+  for (const [sym, list] of bySym) {
+    const kl = klines[sym]
+    if (!kl || !Array.isArray(kl.days) || kl.days.length < 2) continue
+    const days = kl.days
+    let i = -1
+    for (let k = 0; k < days.length; k++) {
+      if (days[k][0] === date) {
+        i = k
+        break
+      }
+    }
+    if (i < 1) continue
+    const close = Number(days[i][1])
+    const prevClose = Number(days[i - 1][1])
+    if (!(close > 0) || !(prevClose > 0)) continue
+    // 盘前持仓 = 该日之前全部交易累计
+    let shares = 0
+    for (const t of list) {
+      if (t.date >= date) break
+      shares = applyTrade(t, shares)
+    }
+    if (shares <= 0) continue
+    const [market, code] = sym.split(':')
+    const first = list.find((t) => t.name)
+    const rate = rateOf(market, rates)
+    out.push({
+      market,
+      code,
+      name: (first && first.name) || code,
+      shares,
+      prevClose,
+      close,
+      changePct: (close / prevClose - 1) * 100,
+      amount: (close - prevClose) * shares * rate
+    })
+  }
+  return out
+}
+
+/**
  * 回撤分析
  * 返回：最大回撤百分比、峰值/谷底日期、下跌历时、
  * 是否已修复、修复日期/修复历时、当前回撤

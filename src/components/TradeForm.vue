@@ -283,7 +283,7 @@ function reset() {
           </el-select>
         </el-form-item>
         <el-form-item label="日期" class="flex1">
-          <el-date-picker v-model="form.date" type="date" value-format="YYYY-MM-DD" placeholder="日期" style="width: 100%" />
+          <el-date-picker v-model="form.date" type="date" value-format="YYYY-MM-DD" placeholder="日期" style="width: 100%" :editable="false" />
         </el-form-item>
       </div>
 

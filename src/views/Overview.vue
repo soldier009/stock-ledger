@@ -5,6 +5,7 @@ import dayjs from 'dayjs'
 import { ArrowLeft, ArrowRight, View, Hide, Loading } from '@element-plus/icons-vue'
 import { usePortfolioStore } from '../stores/portfolio'
 import { fmtMoney, fmtNum, fmtPct, pnlClass, marketLabel, fmtTime, parseTags } from '../utils/format'
+import { holdingDayDetail } from '../services/calc'
 import InitPositionForm from '../components/InitPositionForm.vue'
 import NetWorthCurve from '../components/NetWorthCurve.vue'
 
@@ -143,6 +144,63 @@ function hPrevMonth() { hDate.value = hDate.value.subtract(1, 'month') }
 function hNextMonth() { hDate.value = hDate.value.add(1, 'month') }
 function hPrevYear() { hDate.value = hDate.value.subtract(1, 'year') }
 function hNextYear() { hDate.value = hDate.value.add(1, 'year') }
+// 年模式点某月 -> 跳到该月的月历视图
+function goMonth(key) {
+  hDate.value = dayjs(`${hDate.value.format('YYYY')}-${key}-01`)
+  hMode.value = 'month'
+}
+
+// ===== 点击日期查看当日持仓盈亏明细 =====
+const showDayDrawer = ref(false)
+const selDay = ref('')
+
+function openDay(dateStr) {
+  const row = hMap.value[dateStr]
+  if (!row || row.amount === 0) return
+  selDay.value = dateStr
+  showDayDrawer.value = true
+}
+
+// 某日明细行。历史日期：与日历同口径（盘前持股 × 收盘涨跌 × 汇率）；
+// 今天：与日历“今日”格同口径，用当前持仓的实时行情 (现价 − 昨收) × 持股。
+const dayRows = computed(() => {
+  const date = selDay.value
+  if (!date) return []
+  const by = (portfolio.klineCache && portfolio.klineCache.bySymbol) || {}
+  const todayStr = dayjs().format('YYYY-MM-DD')
+  if (date !== todayStr) return holdingDayDetail(portfolio.trades, by, portfolio.rates, date)
+  const rows = []
+  for (const p of portfolio.positions) {
+    const q = p.quote || null
+    const prev = q && q.prevClose
+    if (!prev || prev <= 0 || p.dayCny === null) continue
+    rows.push({
+      market: p.market,
+      code: p.code,
+      name: p.name || p.code,
+      shares: p.shares,
+      prevClose: prev,
+      close: p.price,
+      changePct: (p.price / prev - 1) * 100,
+      amount: p.dayCny
+    })
+  }
+  return rows
+})
+const gainRows = computed(() => dayRows.value.filter((x) => x.amount > 0).sort((a, b) => b.amount - a.amount))
+const lossRows = computed(() => dayRows.value.filter((x) => x.amount < 0).sort((a, b) => a.amount - b.amount))
+const gainTotal = computed(() => gainRows.value.reduce((a, b) => a + b.amount, 0))
+const lossTotal = computed(() => lossRows.value.reduce((a, b) => a + b.amount, 0))
+const dayTitle = computed(() => (selDay.value ? dayjs(selDay.value).format('YYYY年M月D日') : ''))
+// 带符号金额/涨跌幅文本（亏损列传入负数）
+function moneyCol(v) {
+  if (!v) return '¥0'
+  return `${v > 0 ? '+' : '-'}${fmtMoney(Math.abs(v), 0)}`
+}
+function pctCol(v) {
+  if (v === null || v === undefined) return '—'
+  return `${v > 0 ? '+' : ''}${fmtPct(v)}`
+}
 
 // 持仓分布（按标签 / 按个股）
 function drawPie() {
@@ -370,7 +428,12 @@ onBeforeUnmount(() => {
             v-for="d in hGrid"
             :key="d.format('YYYY-MM-DD')"
             class="calendar-cell"
-            :class="{ muted: !d.isSame(hDate, 'month'), today: d.isSame(dayjs(), 'day') }"
+            :class="{
+              muted: !d.isSame(hDate, 'month'),
+              today: d.isSame(dayjs(), 'day'),
+              clickable: !!hMap[d.format('YYYY-MM-DD')]
+            }"
+            @click="openDay(d.format('YYYY-MM-DD'))"
           >
             <div class="cell-date">{{ d.date() }}</div>
             <template v-if="hMap[d.format('YYYY-MM-DD')] && hMap[d.format('YYYY-MM-DD')].amount !== 0">
@@ -409,8 +472,9 @@ onBeforeUnmount(() => {
           <div
             v-for="m in hYearMonths"
             :key="m.key"
-            class="year-cell"
+            class="year-cell clickable"
             :class="{ today: m.key === dayjs().format('MM') && hDate.isSame(dayjs(), 'year') }"
+            @click="goMonth(m.key)"
           >
             <div class="cell-date">{{ m.label }}</div>
             <template v-if="m.amount !== 0">
@@ -460,6 +524,62 @@ onBeforeUnmount(() => {
         <div v-else class="muted h-tip">暂无持仓数据，记录买入后这里会显示每天的持仓盈亏</div>
       </template>
     </div>
+
+    <!-- 点击日期查看当日持仓盈亏明细 -->
+    <el-drawer
+      v-model="showDayDrawer"
+      direction="btt"
+      :size="`min(640px, 76vh)`"
+      :with-header="false"
+      class="dd-drawer"
+    >
+      <div class="dd-head">
+        <span class="dd-date">{{ dayTitle }}</span>
+        <span class="dd-title">当日持仓盈亏明细</span>
+      </div>
+      <div class="dd-cols">
+        <div class="dd-col">
+          <div class="dd-summary">
+            <span class="dd-sum-label">盈利</span>
+            <span class="dd-sum-num up">{{ moneyCol(gainTotal) }}</span>
+            <span v-if="gainRows.length" class="dd-sum-count">{{ gainRows.length }} 只</span>
+          </div>
+          <div v-if="gainRows.length" class="dd-items">
+            <div v-for="(it, i) in gainRows" :key="'g' + i" class="dd-item">
+              <div class="dd-item-main">
+                <span class="dd-name">{{ it.name }}</span>
+                <span class="dd-sub">{{ it.shares }}股</span>
+              </div>
+              <div class="dd-item-side">
+                <span class="dd-amt up">{{ moneyCol(it.amount) }}</span>
+                <span class="dd-sub">{{ pctCol(it.changePct) }}</span>
+              </div>
+            </div>
+          </div>
+          <div v-else class="dd-empty">当日无盈利股票</div>
+        </div>
+        <div class="dd-col">
+          <div class="dd-summary">
+            <span class="dd-sum-label">亏损</span>
+            <span class="dd-sum-num down">{{ moneyCol(lossTotal) }}</span>
+            <span v-if="lossRows.length" class="dd-sum-count">{{ lossRows.length }} 只</span>
+          </div>
+          <div v-if="lossRows.length" class="dd-items">
+            <div v-for="(it, i) in lossRows" :key="'l' + i" class="dd-item">
+              <div class="dd-item-main">
+                <span class="dd-name">{{ it.name }}</span>
+                <span class="dd-sub">{{ it.shares }}股</span>
+              </div>
+              <div class="dd-item-side">
+                <span class="dd-amt down">{{ moneyCol(it.amount) }}</span>
+                <span class="dd-sub">{{ pctCol(it.changePct) }}</span>
+              </div>
+            </div>
+          </div>
+          <div v-else class="dd-empty">当日无亏损股票</div>
+        </div>
+      </div>
+    </el-drawer>
 
     <InitPositionForm v-model="showInit" />
   </div>
@@ -651,6 +771,14 @@ onBeforeUnmount(() => {
 .h-calendar .year-cell .cell-pct {
   font-size: 7px;
 }
+.h-calendar .calendar-cell.clickable,
+.h-calendar .year-cell.clickable {
+  cursor: pointer;
+}
+.h-calendar .calendar-cell.clickable:hover,
+.h-calendar .year-cell.clickable:hover {
+  background: #eef2f7;
+}
 .h-calendar .h-tip {
   margin-top: 10px;
   text-align: center;
@@ -676,5 +804,108 @@ onBeforeUnmount(() => {
   font-weight: 600;
   word-break: break-all;
   line-height: 1.6;
+}
+</style>
+
+<style>
+/* 底部抽屉：当日持仓盈亏明细（drawer 挂载到 body，需全局样式） */
+.dd-drawer .el-drawer__body {
+  padding: 16px 18px 22px;
+  overflow: hidden;
+}
+.dd-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.dd-date {
+  font-size: 17px;
+  font-weight: 800;
+  color: #1f2937;
+}
+.dd-title {
+  font-size: 12px;
+  color: var(--text-2);
+}
+.dd-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+.dd-col {
+  background: #f8fafc;
+  border-radius: 12px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  min-height: 120px;
+}
+.dd-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.dd-sum-label {
+  font-size: 12px;
+  color: var(--text-2);
+}
+.dd-sum-num {
+  font-size: 21px;
+  font-weight: 800;
+}
+.dd-sum-count {
+  font-size: 11px;
+  color: #94a3b8;
+}
+.dd-items {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-right: 2px;
+  max-height: 46vh;
+}
+.dd-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #fff;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.dd-item-main,
+.dd-item-side {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dd-item-side {
+  align-items: flex-end;
+}
+.dd-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+}
+.dd-amt {
+  font-size: 13px;
+  font-weight: 700;
+}
+.dd-sub {
+  font-size: 11px;
+  color: #94a3b8;
+}
+.dd-empty {
+  color: #94a3b8;
+  font-size: 12px;
+  padding: 24px 0;
+  text-align: center;
+}
+@media (max-width: 520px) {
+  .dd-cols {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

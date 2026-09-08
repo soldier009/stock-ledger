@@ -68,7 +68,7 @@ async function submit() {
         </el-radio-group>
       </el-form-item>
       <el-form-item label="日期">
-        <el-date-picker v-model="form.date" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
+        <el-date-picker v-model="form.date" type="date" value-format="YYYY-MM-DD" style="width: 100%" :editable="false" />
       </el-form-item>
       <el-form-item label="金额（元）">
         <el-input-number v-model="form.amount" :min="0" :precision="2" :controls="false" style="width: 100%" />
