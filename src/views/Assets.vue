@@ -15,7 +15,25 @@ const portfolio = usePortfolioStore()
 const tradeVisible = ref(false)
 const cashVisible = ref(false)
 const cashBroker = ref('')
-const collapsed = ref({})
+
+// 标签分组折叠状态：持久化到 localStorage，记住用户最后保持的展开/折叠
+const TAG_FOLD_KEY = 'sl-assets-tagFold'
+function loadCollapsed() {
+  try {
+    const raw = localStorage.getItem(TAG_FOLD_KEY)
+    return raw ? JSON.parse(raw) : {}
+  } catch {
+    return {}
+  }
+}
+function saveCollapsed() {
+  try {
+    localStorage.setItem(TAG_FOLD_KEY, JSON.stringify(collapsed.value))
+  } catch {
+    /* 忽略存储失败（如隐私模式） */
+  }
+}
+const collapsed = ref(loadCollapsed())
 
 function openCash(broker = '') {
   cashBroker.value = broker || ''
@@ -62,11 +80,14 @@ const groups = computed(() => {
 })
 
 function toggleGroup(tag) {
-  collapsed.value[tag || ''] = !collapsed.value[tag || '']
+  const key = tag || ''
+  // 以 isCollapsed 取反：未点过的组默认折叠，第一次点击即可展开
+  collapsed.value = { ...collapsed.value, [key]: !isCollapsed(key) }
+  saveCollapsed()
 }
 function isCollapsed(tag) {
   const key = tag || ''
-  // 默认折叠，点击后按显式状态切换
+  // 默认折叠；点过的标签保持其最后状态，刷新/重开页面后依然有效
   return key in collapsed.value ? collapsed.value[key] : true
 }
 
