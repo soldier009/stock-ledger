@@ -1,12 +1,12 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import dayjs from 'dayjs'
 import { usePortfolioStore } from '../stores/portfolio'
 import { useSettingsStore } from '../stores/settings'
-import { exportBytes } from '../db'
+import { exportBytes, listLocalSnapshots, getLocalSnapshotBytes, listCloudArchives } from '../db'
 import { exportExcel, exportPdf, buildReportData } from '../services/export'
-import { testConnection } from '../services/github'
+import { testConnection, downloadBackup, parseRepo } from '../services/github'
 
 const portfolio = usePortfolioStore()
 const settings = useSettingsStore()
@@ -68,27 +68,42 @@ async function syncNow() {
     const action = await settings.sync(false)
     if (action === 'downloaded') {
       await portfolio.loadData()
+      portfolio.syncKlines()
       ElMessage.success('已下载云端最新数据')
     } else if (action === 'uploaded') {
       ElMessage.success('本地数据已同步到云端')
     } else if (action === 'same') {
       ElMessage.success('数据已是最新')
     } else if (action === 'conflict') {
-      // 本地与云端都存在数据且无法判断新旧，让用户选择覆盖方向
+      // 本地与云端在上次达成一致后各自都有新改动，让用户选择覆盖方向（不再静默覆盖）
       restoring.value = false
+      const fmtLocal = settings.syncConflictLocalAt
+        ? dayjs(settings.syncConflictLocalAt).format('YYYY-MM-DD HH:mm')
+        : '未知'
+      const fmtCloud = settings.syncConflictCloudAt
+        ? dayjs(settings.syncConflictCloudAt).format('YYYY-MM-DD HH:mm')
+        : '未知'
       try {
         await ElMessageBox.confirm(
-          '本地与云端都已有数据，且无法自动判断哪边更新。\n\n下载云端：以云端数据覆盖本地；\n上传本地：以本地数据覆盖云端。',
+          `本地与云端在达成一致后各自都新增了改动，无法自动合并，已暂停自动覆盖。\n\n本地最后修改：${fmtLocal}\n云端最后修改：${fmtCloud}\n\n下载云端：以云端数据覆盖本地（覆盖前本地会自动留底）；\n上传本地：以本地数据覆盖云端（覆盖前云端旧版本会自动留底到 backup/history/）。`,
           '需要选择同步方向',
           { confirmButtonText: '下载云端', cancelButtonText: '上传本地', distinguishCancelAndClose: true }
         )
         await settings.restore()
         await portfolio.loadData()
-        ElMessage.success('已用云端数据覆盖本地')
+        portfolio.syncKlines()
+        ElMessage.success('已用云端数据覆盖本地（覆盖前本地已自动留底）')
       } catch (err) {
         if (err === 'cancel') {
-          await settings.backupNow(false)
-          ElMessage.success('已用本地数据覆盖云端')
+          // 用户选择以本地覆盖云端
+          try {
+            await settings.uploadNow()
+            ElMessage.success('已用本地数据覆盖云端（覆盖前云端版本已自动留底）')
+          } catch (e) {
+            ElMessage.error(e.message || '上传失败')
+          }
+        } else if (err && err !== 'close') {
+          ElMessage.error(err.message || '同步失败')
         }
       }
       return
@@ -97,6 +112,7 @@ async function syncNow() {
     ElMessage.error(e.message || '同步失败')
   } finally {
     restoring.value = false
+    refreshSnapshots()
   }
 }
 
@@ -111,16 +127,80 @@ function doExportPdf() {
 }
 
 function downloadLocalBackup() {
-  const bytes = exportBytes()
-  if (!bytes) return
+  saveBytesAsFile(`stock-ledger-${dayjs().format('YYYYMMDD-HHmmss')}.db`, exportBytes())
+}
+
+function saveBytesAsFile(name, bytes) {
+  if (!bytes || !bytes.length) return
   const blob = new Blob([bytes], { type: 'application/octet-stream' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `stock-ledger-${dayjs().format('YYYYMMDD-HHmmss')}.db`
+  a.download = name
   a.click()
   URL.revokeObjectURL(url)
 }
+
+// ===== 同步留底：覆盖前自动保存的版本，可下载或恢复到本地 =====
+const snapshotRows = ref([])
+// 有留底记录时自动展开该折叠面板
+const snapshotOpen = ref([])
+
+async function refreshSnapshots() {
+  try {
+    const [local, cloud] = await Promise.all([listLocalSnapshots(), listCloudArchives()])
+    const rows = [
+      ...local.map((x) => ({ ...x, kind: 'local' })),
+      ...cloud.map((x) => ({ ...x, kind: 'cloud' }))
+    ]
+    rows.sort((a, b) => b.ts - a.ts)
+    snapshotRows.value = rows
+    snapshotOpen.value = rows.length ? ['snap'] : []
+  } catch {
+    snapshotRows.value = []
+    snapshotOpen.value = []
+  }
+}
+
+async function getSnapshotBytes(row) {
+  if (row.kind === 'local') return getLocalSnapshotBytes(row.ts)
+  if (!settings.isGithubReady) throw new Error('未配置 GitHub，无法读取云端留底')
+  const [owner, repo] = parseRepo(settings.github.repo)
+  const r = await downloadBackup(settings.github.token, owner, repo, row.path)
+  return r ? r.bytes : null
+}
+
+async function downloadSnapshot(row) {
+  try {
+    const bytes = await getSnapshotBytes(row)
+    saveBytesAsFile(`stock-ledger-snapshot-${dayjs(row.ts).format('YYYYMMDD-HHmmss')}.db`, bytes)
+    ElMessage.success('留底文件已下载')
+  } catch (e) {
+    ElMessage.error('下载失败：' + (e.message || String(e)))
+  }
+}
+
+async function restoreSnapshot(row) {
+  try {
+    await ElMessageBox.confirm(
+      `确定把当前本地数据恢复到 ${dayjs(row.ts).format('YYYY-MM-DD HH:mm')} 这份留底吗？\n\n当前本地数据会被这份留底替换（不会改动云端）。恢复后请到上方执行一次「立即同步」并选择方向，避免与云端再次冲突。`,
+      '恢复留底',
+      { type: 'warning', confirmButtonText: '恢复', cancelButtonText: '取消' }
+    )
+    const bytes = await getSnapshotBytes(row)
+    if (!bytes || !bytes.length) throw new Error('留底内容为空或已不可用')
+    await portfolio.importData(bytes)
+    await settings.flagSyncConflict()
+    ElMessage.success('已恢复到该留底版本，请执行一次同步确认方向')
+    refreshSnapshots()
+  } catch (err) {
+    if (err && err !== 'cancel' && err !== 'close') {
+      ElMessage.error('恢复失败：' + (err.message || String(err)))
+    }
+  }
+}
+
+onMounted(refreshSnapshots)
 
 function onImportFile(e) {
   const file = e.target.files?.[0]
@@ -130,7 +210,10 @@ function onImportFile(e) {
     try {
       const bytes = new Uint8Array(reader.result)
       await portfolio.importData(bytes)
-      ElMessage.success('导入成功')
+      // 导入会改变本地数据，标记冲突待处理，避免自动同步把这份数据静默推上云端覆盖
+      await settings.flagSyncConflict()
+      refreshSnapshots()
+      ElMessage.success('导入成功（已暂停自动同步，请做一次「立即同步」确认方向）')
     } catch (err) {
       ElMessage.error('导入失败：' + (err.message || String(err)))
     }
@@ -258,6 +341,9 @@ function commitRename(oldTag) {
       <div class="muted" style="margin-bottom: 10px">
         在<b>每台设备</b>上填入<b>相同的仓库地址与令牌</b>，打开应用会自动同步最新数据，多端共同使用、数据共享。
       </div>
+      <div class="muted" style="margin-bottom: 10px">
+        同步按整份账本的新旧整体替换；若<b>本机与云端在达成一致后各自都有新改动</b>，会暂停并请您选择方向（不会静默覆盖）。任何覆盖发生前都会自动留底，可在下方「数据管理 → 同步自动留底」找回。
+      </div>
       <el-form label-position="top" size="default">
         <el-form-item label="仓库地址（owner/仓库名）">
           <el-input v-model="settings.github.repo" placeholder="如 myname/stock-ledger-backup" @change="settings.saveGithub()" />
@@ -291,6 +377,9 @@ function commitRename(oldTag) {
         <span v-if="settings.lastSyncAt">{{ dayjs(settings.lastSyncAt).format('YYYY-MM-DD HH:mm') }}</span>
         <span v-else>从未</span>
         <template v-if="settings.syncing"> · 同步中...</template>
+      </div>
+      <div v-if="settings.syncConflict" class="sync-conflict-tip">
+        ⚠ 待处理：本地与云端在上次同步后各自都有新改动，为避免误覆盖已暂停自动同步。请点击上方「立即同步」选择覆盖方向。
       </div>
       <div v-if="settings.backupError" class="muted up" style="margin-top: 6px">备份错误：{{ settings.backupError }}</div>
       <div v-if="settings.syncError" class="muted up" style="margin-top: 6px">同步错误：{{ settings.syncError }}</div>
@@ -329,6 +418,31 @@ function commitRename(oldTag) {
       </div>
       <input ref="fileInput" type="file" accept=".db,.sqlite,.sqlite3" style="display: none" @change="onImportFile" />
       <div class="muted" style="margin-top: 8px">备份文件为 SQLite 数据库（.db），可用于本地存档或手动迁移。</div>
+
+      <el-collapse v-model="snapshotOpen" style="margin-top: 12px; border: none">
+        <el-collapse-item name="snap" title="同步自动留底（覆盖前自动保存，可下载/恢复）">
+          <div class="muted" style="margin-bottom: 8px">
+            每次同步覆盖发生前（无论以云端覆盖本地、还是以本地覆盖云端），系统都会自动留一份底：本地留底保存在本机，云端留底存放在仓库的 backup/history/ 目录。每类自动保留最近 12 份。「恢复」会替换当前本地数据，之后请做一次同步确认方向。
+          </div>
+          <template v-if="snapshotRows.length">
+            <div v-for="r in snapshotRows" :key="r.kind + '-' + r.ts" class="tag-row">
+              <div style="flex: 1; min-width: 0">
+                <div class="row gap8">
+                  <span class="tag-name">{{ r.kind === 'local' ? '本地留底' : '云端留底' }}</span>
+                  <span class="muted" style="font-size: 12px">{{ dayjs(r.ts).format('YYYY-MM-DD HH:mm') }}</span>
+                </div>
+                <div v-if="r.note" class="muted" style="font-size: 12px">{{ r.note }}</div>
+              </div>
+              <div class="row gap4">
+                <el-button size="small" text type="primary" @click="downloadSnapshot(r)">下载</el-button>
+                <el-button size="small" text @click="restoreSnapshot(r)">恢复</el-button>
+              </div>
+            </div>
+          </template>
+          <div v-else class="muted">暂无留底记录（发生覆盖行为后才会自动生成）</div>
+        </el-collapse-item>
+      </el-collapse>
+
       <el-button type="danger" plain style="width: 100%; margin-top: 12px" @click="clearAll">清空所有数据</el-button>
     </div>
 
@@ -440,6 +554,16 @@ function commitRename(oldTag) {
 </template>
 
 <style scoped>
+.sync-conflict-tip {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #b45309;
+  background: #fef3c7;
+  border: 1px solid #fde68a;
+}
 .privacy-link {
   font-size: 13px;
   color: var(--primary, #0f9d78);

@@ -2,57 +2,32 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import dayjs from 'dayjs'
+import { ArrowLeft, ArrowRight, View, Hide, Loading } from '@element-plus/icons-vue'
 import { usePortfolioStore } from '../stores/portfolio'
 import { fmtMoney, fmtNum, fmtPct, pnlClass, marketLabel, fmtTime, parseTags } from '../utils/format'
 import InitPositionForm from '../components/InitPositionForm.vue'
+import NetWorthCurve from '../components/NetWorthCurve.vue'
 
 const portfolio = usePortfolioStore()
 const showInit = ref(false)
-const chartRef = ref(null)
+const showCurve = ref(false)
+const showMoney = ref(true)
 const pieRef = ref(null)
-let chart = null
 let pieChart = null
 const PALETTE = ['#dc2626', '#3b82f6', '#f59e0b', '#10b981', '#8b5cf6', '#14b8a6', '#f97316', '#64748b']
-
-const ranges = [
-  { label: '近一周', key: '1w' },
-  { label: '本月至今', key: 'mtd' },
-  { label: '近一月', key: '1m' },
-  { label: '近三月', key: '3m' },
-  { label: '年初至今', key: 'ytd' },
-  { label: '近一年', key: '1y' }
-]
-const activeRange = ref('1m')
-
-function startOfRange(key) {
-  const today = dayjs()
-  switch (key) {
-    case '1w': return today.subtract(7, 'day')
-    case 'mtd': return today.startOf('month')
-    case '1m': return today.subtract(1, 'month')
-    case '3m': return today.subtract(3, 'month')
-    case 'ytd': return today.startOf('year')
-    case '1y': return today.subtract(1, 'year')
-    default: return today.subtract(1, 'month')
-  }
-}
-
-const filteredSeries = computed(() => {
-  const start = startOfRange(activeRange.value)
-  return portfolio.netValue.filter((p) => dayjs(p.date).isAfter(start) || dayjs(p.date).isSame(start, 'day'))
-})
-
-const curveChange = computed(() => {
-  const s = filteredSeries.value
-  if (!s.length) return { value: 0, pct: 0 }
-  const first = s[0].netValue
-  const last = s[s.length - 1].netValue
-  return { value: last - first, pct: first > 0 ? ((last - first) / first) * 100 : 0 }
-})
 
 const latest = computed(() => {
   const s = portfolio.netValue
   return s.length ? s[s.length - 1] : { netValue: portfolio.totals.totalAssets }
+})
+
+const todayChange = computed(() => {
+  const s = portfolio.netValue
+  if (s.length < 2) return { value: 0, pct: 0 }
+  const last = s[s.length - 1]
+  const prev = s[s.length - 2]
+  const v = last.netValue - prev.netValue
+  return { value: v, pct: prev.netValue ? (v / prev.netValue) * 100 : 0 }
 })
 
 const allocation = computed(() => {
@@ -87,49 +62,87 @@ const pieData = computed(() => {
   return portfolio.positions.map((p) => ({ name: p.name || p.code, value: Math.round(p.mvCny * 100) / 100 }))
 })
 
-function draw() {
-  if (!chartRef.value) return
-  if (!chart) chart = echarts.init(chartRef.value)
-  const data = filteredSeries.value
-  if (!data.length) {
-    chart.clear()
-    return
+// ===== 当日持仓盈亏日历 =====
+const hMode = ref('month')
+const hDate = ref(dayjs())
+
+const hGrid = computed(() => {
+  const start = hDate.value.startOf('month')
+  const end = hDate.value.endOf('month')
+  const days = []
+  let cursor = start.startOf('week')
+  while (cursor.isBefore(end) || cursor.isSame(end, 'day')) {
+    days.push(cursor)
+    cursor = cursor.add(1, 'day')
   }
-  chart.setOption({
-    tooltip: { trigger: 'axis', valueFormatter: (v) => '¥' + fmtNum(v, 0) },
-    grid: { left: 56, right: 16, top: 12, bottom: 24 },
-    xAxis: {
-      type: 'category',
-      boundaryGap: false,
-      data: data.map((d) => d.date.slice(5)),
-      axisLabel: { color: '#94a3b8', fontSize: 10 },
-      axisLine: { lineStyle: { color: '#e2e8f0' } }
-    },
-    yAxis: {
-      type: 'value',
-      axisLabel: { color: '#94a3b8', fontSize: 10, formatter: (v) => (v >= 10000 ? (v / 10000).toFixed(0) + '万' : v) },
-      splitLine: { lineStyle: { color: '#f1f5f9' } }
-    },
-    series: [{
-      name: '净资产',
-      type: 'line',
-      data: data.map((d) => Math.round(d.netValue * 100) / 100),
-      smooth: true,
-      symbol: 'none',
-      lineStyle: { color: '#dc2626', width: 2 },
-      itemStyle: { color: '#dc2626' },
-      areaStyle: {
-        color: {
-          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-          colorStops: [
-            { offset: 0, color: 'rgba(220,38,38,0.18)' },
-            { offset: 1, color: 'rgba(220,38,38,0.01)' }
-          ]
-        }
-      }
-    }]
-  })
+  return days
+})
+
+const hMap = computed(() => {
+  const map = {}
+  for (const d of portfolio.dailyHolding) map[d.date] = d
+  return map
+})
+
+// 汇总某区间（前缀匹配）浮盈亏金额 + 基准（区间内最早一个交易日的盘前市值）
+function sumRange(prefix) {
+  let amount = 0
+  let firstBase = null
+  for (const d of portfolio.dailyHolding) {
+    if (!d.date.startsWith(prefix)) continue
+    amount += d.amount
+    if (firstBase === null && d.base > 0) firstBase = d.base
+  }
+  return { amount, base: firstBase, pct: firstBase ? (amount / firstBase) * 100 : null }
 }
+
+const hMonth = computed(() => sumRange(hDate.value.format('YYYY-MM')))
+const hYear = computed(() => sumRange(hDate.value.format('YYYY')))
+
+function hDayPct(dateStr) {
+  const d = hMap.value[dateStr]
+  if (!d || !d.base) return null
+  return (d.amount / d.base) * 100
+}
+
+// 年模式：当年 1-12 月数据（金额 + 当月涨跌幅）
+const hYearMonths = computed(() => {
+  const year = hDate.value.format('YYYY')
+  const map = {}
+  for (const d of portfolio.dailyHolding) {
+    if (!d.date.startsWith(year)) continue
+    const k = d.date.slice(5, 7)
+    if (!map[k]) map[k] = { amount: 0, base: null }
+    map[k].amount += d.amount
+    if (map[k].base === null && d.base > 0) map[k].base = d.base
+  }
+  return Array.from({ length: 12 }, (_, i) => {
+    const k = String(i + 1).padStart(2, '0')
+    const m = map[k] || { amount: 0, base: null }
+    return { key: k, label: `${i + 1}月`, amount: m.amount, pct: m.base ? (m.amount / m.base) * 100 : null }
+  })
+})
+
+const hasHolding = computed(() => portfolio.dailyHolding.length > 0)
+
+// 日历数据是否“完整可显示”：
+// - 缺整段历史（首次/换设备/失败）时，用状态提示代替数字，避免把残缺数据当成完整结果
+// - 仅增量补当天（每日常规刷新）时不阻断，正常显示已有数据
+const kCal = computed(() => {
+  const p = portfolio
+  if (!p.trades.length) return { kind: 'no-data' }
+  if (p.klineState === 'missing') return { kind: 'missing', list: p.klineMissing }
+  if ((p.klineState === 'syncing' || p.klineState === 'idle') && p.klineBlocking) {
+    return { kind: 'loading', total: p.klineTotal, done: p.klineFetched }
+  }
+  if (p.klineState === 'idle') return { kind: 'loading', total: 0, done: 0 }
+  return { kind: 'ok' }
+})
+
+function hPrevMonth() { hDate.value = hDate.value.subtract(1, 'month') }
+function hNextMonth() { hDate.value = hDate.value.add(1, 'month') }
+function hPrevYear() { hDate.value = hDate.value.subtract(1, 'year') }
+function hNextYear() { hDate.value = hDate.value.add(1, 'year') }
 
 // 持仓分布（按标签 / 按个股）
 function drawPie() {
@@ -153,28 +166,22 @@ function drawPie() {
   })
 }
 
-watch([() => filteredSeries.value.length, () => portfolio.netValue.length], async () => {
-  await nextTick()
-  draw()
-})
-
-watch(activeRange, draw)
-
 watch(
   [() => portfolio.positions.map((p) => Math.round(p.mvCny)).join(','), pieMode],
   async () => { await nextTick(); drawPie() }
 )
 
-function onResize() { chart && chart.resize(); pieChart && pieChart.resize() }
+function onResize() { pieChart && pieChart.resize() }
 
 onMounted(() => {
-  nextTick().then(() => { draw(); drawPie() })
+  nextTick().then(() => { drawPie() })
   window.addEventListener('resize', onResize)
+  // 进入总览时确保持仓行情日历数据最新（幂等，每日最多拉取一次）
+  portfolio.syncKlines()
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onResize)
-  chart && chart.dispose()
   pieChart && pieChart.dispose()
 })
 </script>
@@ -185,40 +192,58 @@ onBeforeUnmount(() => {
       <div class="page-title">总览</div>
     </div>
 
-    <!-- 净值曲线卡片 -->
-    <div class="card">
-      <div class="row between" style="margin-bottom: 6px">
-        <div class="row gap8">
+    <!-- 净资产卡片：简洁第一层 -->
+    <div class="card net-worth-card" @click="showCurve = true">
+      <div class="row between" style="margin-bottom: 8px; align-items: center">
+        <div class="row gap8" @click.stop>
           <span class="section-title">净资产</span>
           <el-button type="primary" size="small" round @click="showInit = true">＋ 新建仓</el-button>
         </div>
-        <div class="muted num">
-          {{ portfolio.lastQuoteAt ? '更新于 ' + fmtTime(portfolio.lastQuoteAt) : '' }}
+        <div class="row gap8" style="align-items: center; color: var(--text-2)">
+          <el-icon
+            :size="18"
+            style="cursor: pointer"
+            @click.stop="showMoney = !showMoney"
+          >
+            <View v-if="showMoney" />
+            <Hide v-else />
+          </el-icon>
+          <span class="muted num" style="font-size: 11px">
+            {{ portfolio.lastQuoteAt ? '更新于 ' + fmtTime(portfolio.lastQuoteAt) : '' }}
+          </span>
+          <el-icon :size="18" style="color: #94a3b8"><ArrowRight /></el-icon>
         </div>
       </div>
-      <div class="row between" style="align-items: flex-end; margin-bottom: 14px">
-        <div>
-          <div class="big-value num">{{ fmtMoney(latest.netValue, 0) }}</div>
-        </div>
+
+      <div class="row between" style="align-items: flex-end; margin-bottom: 12px">
+        <div class="big-value num">{{ showMoney ? fmtMoney(latest.netValue, 0) : '¥****' }}</div>
         <div style="text-align: right">
-          <div class="muted">{{ ranges.find(r => r.key === activeRange)?.label }}变动</div>
-          <div class="num" :class="pnlClass(curveChange.value)">
-            {{ curveChange.value > 0 ? '+' : '' }}{{ fmtMoney(curveChange.value, 0) }}
-            ({{ curveChange.value > 0 ? '+' : '' }}{{ fmtPct(curveChange.pct) }})
+          <div class="muted" style="font-size: 12px">今日变化</div>
+          <div class="num" :class="pnlClass(todayChange.value)">
+            {{ todayChange.value > 0 ? '+' : '' }}{{ fmtMoney(todayChange.value, 0) }}
+            ({{ todayChange.value > 0 ? '+' : '' }}{{ fmtPct(todayChange.pct) }})
           </div>
         </div>
       </div>
-      <div class="range-bar">
-        <span
-          v-for="r in ranges"
-          :key="r.key"
-          class="range-chip"
-          :class="{ active: activeRange === r.key }"
-          @click="activeRange = r.key"
-        >{{ r.label }}</span>
+
+      <div class="asset-liability">
+        <div>
+          <div class="muted" style="font-size: 12px">持仓市值</div>
+          <div class="num" style="font-size: 16px; font-weight: 700; margin-top: 2px">
+            {{ showMoney ? fmtMoney(portfolio.totals.mvTotal, 2) : '¥****' }}
+          </div>
+        </div>
+        <div class="al-divider"></div>
+        <div>
+          <div class="muted" style="font-size: 12px">现金</div>
+          <div class="num" style="font-size: 16px; font-weight: 700; margin-top: 2px">
+            {{ showMoney ? fmtMoney(portfolio.totals.cash, 2) : '¥****' }}
+          </div>
+        </div>
       </div>
-      <div ref="chartRef" class="overview-chart"></div>
     </div>
+
+    <NetWorthCurve v-model="showCurve" />
 
     <!-- 关键指标 -->
     <div class="metrics card">
@@ -291,6 +316,151 @@ onBeforeUnmount(() => {
       <div v-if="!portfolio.positions.length" class="muted" style="text-align: center; padding: 20px">暂无持仓数据</div>
     </div>
 
+    <!-- 当日持仓盈亏日历 -->
+    <div class="card h-calendar">
+      <div class="row between" style="margin-bottom: 12px">
+        <div class="section-title">当日持仓盈亏</div>
+        <div class="pie-switch">
+          <span :class="{ active: hMode === 'month' }" @click="hMode = 'month'">月</span>
+          <span :class="{ active: hMode === 'year' }" @click="hMode = 'year'">年</span>
+        </div>
+      </div>
+
+      <!-- ===== 数据齐全：显示月/年日历 ===== -->
+      <template v-if="kCal.kind === 'ok'">
+      <!-- 月模式 -->
+      <template v-if="hMode === 'month'">
+        <div class="calendar-nav">
+          <div class="nav-item">
+            <el-icon @click="hPrevYear"><ArrowLeft /></el-icon>
+            <span class="nav-year">{{ hDate.format('YYYY年') }}</span>
+            <el-icon @click="hNextYear"><ArrowRight /></el-icon>
+          </div>
+          <div class="nav-item">
+            <el-icon @click="hPrevMonth"><ArrowLeft /></el-icon>
+            <span class="nav-month">{{ hDate.format('M月') }}</span>
+            <el-icon @click="hNextMonth"><ArrowRight /></el-icon>
+          </div>
+        </div>
+        <div class="row between" style="margin-bottom: 12px">
+          <div>
+            <span class="muted">本月变动</span>
+            <span class="num h-num" style="margin-left: 6px" :class="pnlClass(hMonth.amount)">
+              {{ hMonth.amount > 0 ? '+' : '' }}{{ fmtNum(hMonth.amount, 0) }}
+            </span>
+            <span v-if="hMonth.pct !== null" class="num h-num" style="margin-left: 6px" :class="pnlClass(hMonth.pct)">
+              {{ hMonth.pct > 0 ? '+' : '' }}{{ fmtPct(hMonth.pct) }}
+            </span>
+          </div>
+          <div>
+            <span class="muted">本年变动</span>
+            <span class="num h-num" style="margin-left: 6px" :class="pnlClass(hYear.amount)">
+              {{ hYear.amount > 0 ? '+' : '' }}{{ fmtNum(hYear.amount, 0) }}
+            </span>
+            <span v-if="hYear.pct !== null" class="num h-num" style="margin-left: 6px" :class="pnlClass(hYear.pct)">
+              {{ hYear.pct > 0 ? '+' : '' }}{{ fmtPct(hYear.pct) }}
+            </span>
+          </div>
+        </div>
+        <div class="calendar-header">
+          <span v-for="w in ['日','一','二','三','四','五','六']" :key="w">{{ w }}</span>
+        </div>
+        <div class="calendar-grid">
+          <div
+            v-for="d in hGrid"
+            :key="d.format('YYYY-MM-DD')"
+            class="calendar-cell"
+            :class="{ muted: !d.isSame(hDate, 'month'), today: d.isSame(dayjs(), 'day') }"
+          >
+            <div class="cell-date">{{ d.date() }}</div>
+            <template v-if="hMap[d.format('YYYY-MM-DD')] && hMap[d.format('YYYY-MM-DD')].amount !== 0">
+              <div class="cell-pnl num" :class="pnlClass(hMap[d.format('YYYY-MM-DD')].amount)">
+                {{ hMap[d.format('YYYY-MM-DD')].amount > 0 ? '+' : '' }}{{ fmtNum(hMap[d.format('YYYY-MM-DD')].amount, 0) }}
+              </div>
+              <div v-if="hDayPct(d.format('YYYY-MM-DD')) !== null" class="cell-pct num" :class="pnlClass(hDayPct(d.format('YYYY-MM-DD')))">
+                {{ hDayPct(d.format('YYYY-MM-DD')) > 0 ? '+' : '' }}{{ fmtPct(hDayPct(d.format('YYYY-MM-DD'))) }}
+              </div>
+            </template>
+          </div>
+        </div>
+      </template>
+
+      <!-- 年模式 -->
+      <template v-else>
+        <div class="calendar-nav">
+          <div class="nav-item">
+            <el-icon @click="hPrevYear"><ArrowLeft /></el-icon>
+            <span class="nav-year">{{ hDate.format('YYYY年') }}</span>
+            <el-icon @click="hNextYear"><ArrowRight /></el-icon>
+          </div>
+        </div>
+        <div class="row" style="justify-content: flex-end; margin-bottom: 12px">
+          <div>
+            <span class="muted">本年变动</span>
+            <span class="num h-num" style="margin-left: 6px" :class="pnlClass(hYear.amount)">
+              {{ hYear.amount > 0 ? '+' : '' }}{{ fmtNum(hYear.amount, 0) }}
+            </span>
+            <span v-if="hYear.pct !== null" class="num h-num" style="margin-left: 6px" :class="pnlClass(hYear.pct)">
+              {{ hYear.pct > 0 ? '+' : '' }}{{ fmtPct(hYear.pct) }}
+            </span>
+          </div>
+        </div>
+        <div class="year-grid">
+          <div
+            v-for="m in hYearMonths"
+            :key="m.key"
+            class="year-cell"
+            :class="{ today: m.key === dayjs().format('MM') && hDate.isSame(dayjs(), 'year') }"
+          >
+            <div class="cell-date">{{ m.label }}</div>
+            <template v-if="m.amount !== 0">
+              <div class="cell-pnl num" :class="pnlClass(m.amount)">
+                {{ m.amount > 0 ? '+' : '' }}{{ fmtNum(m.amount, 0) }}
+              </div>
+              <div v-if="m.pct !== null" class="cell-pct num" :class="pnlClass(m.pct)">
+                {{ m.pct > 0 ? '+' : '' }}{{ fmtPct(m.pct) }}
+              </div>
+            </template>
+            <div v-else class="cell-empty">—</div>
+          </div>
+        </div>
+      </template>
+
+        <div v-if="hasHolding" class="muted h-tip">按当日收盘价估算；分红/送股等除权日可能有偏差</div>
+        <div v-else class="muted h-tip">暂无逐日数据（记录买入后，次日起会显示每天的持仓盈亏）</div>
+      </template>
+
+      <!-- ===== 数据不齐：补全中 / 缺失可重试 / 暂无数据 ===== -->
+      <template v-else>
+        <!-- 首次补全历史价格（换设备/清缓存后） -->
+        <div v-if="kCal.kind === 'loading'" class="h-status">
+          <el-icon class="is-loading" :size="18"><Loading /></el-icon>
+          <span v-if="kCal.total" style="font-weight: 600">正在获取历史行情 {{ kCal.done }}/{{ kCal.total }}…</span>
+          <span v-else style="font-weight: 600">正在获取历史行情…</span>
+          <div class="muted" style="margin-top: 4px; line-height: 1.6">
+            换设备/清缓存后的首次打开，需要把每只股票从最早一笔交易到今天的历史价格补全，<br />请稍候，完成后会自动显示，无需手动操作。
+          </div>
+        </div>
+        <!-- 有股票一直没拉到，明确告知并支持重试 -->
+        <div v-else-if="kCal.kind === 'missing'" class="h-status">
+          <div class="h-status-title">以下股票的历史价格还没获取到：</div>
+          <div class="h-missing-list">{{ kCal.list.map((x) => x.name || x.code).join('、') }}</div>
+          <div class="muted" style="margin-top: 4px; line-height: 1.6">
+            为避免把不完整的数据当成完整结果，日历暂不显示数字。请检查网络后重试。
+          </div>
+          <el-button
+            size="small"
+            type="primary"
+            :loading="portfolio.klineSyncing"
+            style="margin-top: 12px"
+            @click="portfolio.retryKlines()"
+          >重试补全</el-button>
+        </div>
+        <!-- 完全没有任何交易记录 -->
+        <div v-else class="muted h-tip">暂无持仓数据，记录买入后这里会显示每天的持仓盈亏</div>
+      </template>
+    </div>
+
     <InitPositionForm v-model="showInit" />
   </div>
 </template>
@@ -301,31 +471,27 @@ onBeforeUnmount(() => {
   font-weight: 600;
 }
 .big-value {
-  font-size: 30px;
+  font-size: 32px;
   font-weight: 800;
 }
-.range-bar {
+.net-worth-card {
+  cursor: pointer;
+}
+.asset-liability {
   display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  padding-bottom: 8px;
-  margin-bottom: 8px;
+  align-items: center;
+  gap: 16px;
+  padding-top: 12px;
+  border-top: 1px solid #f1f5f9;
 }
-.range-chip {
-  flex-shrink: 0;
-  font-size: 12px;
-  padding: 5px 12px;
-  border-radius: 16px;
-  background: #f1f5f9;
-  color: var(--text-2);
+.asset-liability > div:first-child,
+.asset-liability > div:last-child {
+  flex: 1;
 }
-.range-chip.active {
-  background: #fdecec;
-  color: #dc2626;
-  font-weight: 600;
-}
-.overview-chart {
-  height: 220px;
+.al-divider {
+  width: 1px;
+  height: 32px;
+  background: #e2e8f0;
 }
 .pie-chart {
   height: 260px;
@@ -371,5 +537,144 @@ onBeforeUnmount(() => {
   color: #dc2626;
   font-weight: 600;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+
+/* ===== 当日持仓盈亏日历 ===== */
+.h-calendar .calendar-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.h-calendar .nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+.h-calendar .nav-item .el-icon {
+  color: var(--text-2);
+}
+.h-calendar .nav-year {
+  font-size: 15px;
+  font-weight: 700;
+}
+.h-calendar .nav-month {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--primary);
+}
+.h-calendar .calendar-header {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  text-align: center;
+  color: var(--text-2);
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+.h-calendar .calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+.h-calendar .calendar-cell {
+  aspect-ratio: 1 / 0.92;
+  border-radius: 8px;
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  padding: 1px;
+  overflow: hidden;
+}
+.h-calendar .calendar-cell.muted {
+  opacity: 0.35;
+}
+.h-calendar .calendar-cell.today {
+  border: 1.5px solid var(--primary);
+}
+.h-calendar .cell-date {
+  font-size: 11px;
+  line-height: 1.1;
+}
+.h-calendar .cell-pnl {
+  font-size: 9px;
+  font-weight: 700;
+  margin-top: 1px;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+.h-calendar .cell-pct {
+  font-size: 7px;
+  font-weight: 600;
+  margin-top: 1px;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+.h-calendar .cell-empty {
+  color: #cbd5e1;
+  font-size: 10px;
+  margin-top: 4px;
+}
+.h-calendar .muted {
+  font-size: 11px;
+}
+.h-calendar .h-num {
+  font-size: 13px;
+}
+.h-calendar .year-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+.h-calendar .year-cell {
+  aspect-ratio: 1.1;
+  border-radius: 8px;
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  padding: 3px 1px;
+  overflow: hidden;
+}
+.h-calendar .year-cell.today {
+  border: 1.5px solid var(--primary);
+}
+.h-calendar .year-cell .cell-pnl {
+  font-size: 9px;
+}
+.h-calendar .year-cell .cell-pct {
+  font-size: 7px;
+}
+.h-calendar .h-tip {
+  margin-top: 10px;
+  text-align: center;
+}
+.h-calendar .h-status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 26px 10px;
+  color: var(--text-2);
+  font-size: 12px;
+  text-align: center;
+}
+.h-calendar .h-status-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+}
+.h-calendar .h-missing-list {
+  color: #dc2626;
+  font-size: 13px;
+  font-weight: 600;
+  word-break: break-all;
+  line-height: 1.6;
 }
 </style>

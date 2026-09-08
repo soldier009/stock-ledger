@@ -284,6 +284,73 @@ export function setDefaultBroker(name) {
   setSetting('defaultBroker', name)
 }
 
+export async function getKv(key) {
+  return idbGet(key)
+}
+
+export async function setKv(key, value) {
+  await idbSet(key, value)
+}
+
+// ===== 同步留底：覆盖前自动保存一份，避免误覆盖丢数据 =====
+const SNAP_LIMIT = 12
+
+function idbDel(key) {
+  return openIDB().then(
+    (idb) =>
+      new Promise((resolve, reject) => {
+        const tx = idb.transaction(STORE, 'readwrite')
+        tx.objectStore(STORE).delete(key)
+        tx.oncomplete = () => resolve()
+        tx.onerror = () => reject(tx.error)
+      })
+  )
+}
+
+/** 保存一份当前本地数据库快照到 IndexedDB（自动只保留最近 SNAP_LIMIT 份），返回时间戳 */
+export async function saveLocalSnapshot(note = '') {
+  if (!db) return null
+  const ts = Date.now()
+  const bytes = db.export()
+  try {
+    await idbSet('snap-' + ts, { bytes })
+  } catch {
+    return null
+  }
+  const meta = (await idbGet('snap-meta')) || []
+  meta.unshift({ ts, note })
+  while (meta.length > SNAP_LIMIT) {
+    const old = meta.pop()
+    if (old) await idbDel('snap-' + old.ts)
+  }
+  await idbSet('snap-meta', meta)
+  return ts
+}
+
+/** 本地留底列表（新的在前）：[{ ts, note }] */
+export async function listLocalSnapshots() {
+  return (await idbGet('snap-meta')) || []
+}
+
+/** 取某份本地留底的字节 */
+export async function getLocalSnapshotBytes(ts) {
+  const rec = await idbGet('snap-' + ts)
+  return rec ? rec.bytes : null
+}
+
+/** 记录一份“覆盖前云端版本”已存档到仓库 backup/history/ 下（元数据只保存在本机，文件在云端） */
+export async function addCloudArchive(ts, path, note = '') {
+  const meta = (await idbGet('arch-meta')) || []
+  meta.unshift({ ts, path, note })
+  while (meta.length > SNAP_LIMIT) meta.pop()
+  await idbSet('arch-meta', meta)
+}
+
+/** 云端留底列表（新的在前）：[{ ts, path, note }] */
+export async function listCloudArchives() {
+  return (await idbGet('arch-meta')) || []
+}
+
 export function getSetting(key, fallback = null) {
   const row = get('SELECT value FROM settings WHERE key = ?', [key])
   if (!row) return fallback

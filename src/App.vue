@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import { registerSW } from 'virtual:pwa-register'
 import { usePortfolioStore } from './stores/portfolio'
@@ -8,6 +8,7 @@ import { useSettingsStore } from './stores/settings'
 import { debounce } from './utils/debounce'
 
 const route = useRoute()
+const router = useRouter()
 const portfolio = usePortfolioStore()
 const settings = useSettingsStore()
 const online = ref(navigator.onLine)
@@ -56,7 +57,11 @@ async function autoSync() {
   const last = settings.lastSyncAt ? new Date(settings.lastSyncAt).getTime() : 0
   if (Date.now() - last < 2 * 60 * 1000) return
   const action = await settings.sync(true)
-  if (action === 'downloaded') await portfolio.loadData()
+  if (action === 'downloaded') {
+    await portfolio.loadData()
+    // 新设备下载云端账本后，日K缓存需要重新补全（本地缓存不带过去）
+    portfolio.syncKlines()
+  }
 }
 
 function onFocus() {
@@ -73,6 +78,10 @@ function onVisibility() {
 
 function onNetChange() {
   online.value = navigator.onLine
+}
+
+function goSettings() {
+  router.push('/settings')
 }
 
 onMounted(async () => {
@@ -112,8 +121,11 @@ watch(
     <div class="muted">正在加载数据...</div>
     <div class="splash-ver">v{{ __APP_VERSION__ }}</div>
   </div>
-  <div v-else class="app" :class="{ 'has-offline-bar': !online }">
+  <div v-else class="app" :class="{ 'has-offline-bar': !online, 'has-conflict-bar': settings.syncConflict && online }">
     <div v-if="!online" class="offline-bar">当前离线：行情刷新与云同步暂不可用</div>
+    <div v-if="settings.syncConflict && online" class="conflict-bar" @click="goSettings">
+      ⚠ 本地与云端在两边都有新改动，为避免误覆盖已暂停自动同步，点此选择方向
+    </div>
     <div class="ver-badge">v{{ __APP_VERSION__ }}</div>
     <div class="page-wrap">
       <router-view />
@@ -166,6 +178,25 @@ watch(
   font-size: 12px;
   text-align: center;
   padding: calc(6px + env(safe-area-inset-top)) 10px 6px;
+}
+.conflict-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  background: #b45309;
+  color: #fff;
+  font-size: 12px;
+  text-align: center;
+  cursor: pointer;
+  padding: calc(6px + env(safe-area-inset-top)) 10px 6px;
+}
+.has-offline-bar .conflict-bar {
+  top: calc(32px + env(safe-area-inset-top));
+}
+.has-conflict-bar .ver-badge {
+  top: calc(32px + env(safe-area-inset-top));
 }
 .has-offline-bar .ver-badge {
   top: calc(32px + env(safe-area-inset-top));

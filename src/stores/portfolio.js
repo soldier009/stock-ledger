@@ -11,7 +11,9 @@ import {
   deleteBroker as dbDeleteBroker,
   getDefaultBroker as dbGetDefaultBroker,
   setDefaultBroker as dbSetDefaultBroker,
-  markDirty
+  markDirty,
+  getKv,
+  setKv
 } from '../db'
 import {
   computeAll,
@@ -21,12 +23,29 @@ import {
   cumulativeRealized,
   netValueSeries,
   dailyRealized,
+  dailyHoldingPnl,
   drawdown
 } from '../services/calc'
 import { fetchQuotes, fetchRates } from '../services/quotes'
+import { fetchDayKlines } from '../services/kline'
 import { rateOf } from '../utils/format'
 import { DEFAULT_BROKER } from '../constants'
 import { useSettingsStore } from './settings'
+
+// 行情日K缓存（IndexedDB，独立于 sqlite 备份；不触发本地脏标记）
+const KLINE_KEY = 'stock-ledger-kline-v1'
+
+function fmtDay(d) {
+  const m = d.getMonth() + 1
+  const dd = d.getDate()
+  return d.getFullYear() + '-' + (m < 10 ? '0' : '') + m + '-' + (dd < 10 ? '0' : '') + dd
+}
+
+function dayAfter(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00')
+  d.setDate(d.getDate() + 1)
+  return fmtDay(d)
+}
 
 export const usePortfolioStore = defineStore('portfolio', {
   state: () => ({
@@ -45,6 +64,19 @@ export const usePortfolioStore = defineStore('portfolio', {
     netValue: [],
     dailyPnl: [],
     drawdownStats: null,
+    dailyHolding: [],
+    klineCache: { bySymbol: {}, updatedAt: '' },
+    klineSyncing: false,
+    klineError: '',
+    // 日K数据完整性状态：'idle' | 'syncing' | 'ready' | 'missing'
+    klineState: 'idle',
+    // 目前还缺日K的股票（按交易记录逐只核对）
+    klineMissing: [],
+    // 需要整段历史补全（首次/换设备）时阻断日历显示，避免残缺数字上屏
+    klineBlocking: false,
+    // 本轮补全进度
+    klineTotal: 0,
+    klineFetched: 0,
     quotes: {},
     rates: { usd: 7.2, hkd: 0.92 },
     totals: {
@@ -74,6 +106,7 @@ export const usePortfolioStore = defineStore('portfolio', {
       settings.load()
       this.rates = { ...this.rates, usd: settings.rates.usd, hkd: settings.rates.hkd }
       await this.loadData()
+      await this.loadKlineCache()
       this.ready = true
       this.refreshQuotes()
     },
@@ -176,12 +209,8 @@ export const usePortfolioStore = defineStore('portfolio', {
       this.yearlyDetail = yearlyStockDetail(r.realizedEvents)
       this.cumulative = cumulativeRealized(r.realizedEvents)
 
-      const currentPrices = {}
-      for (const p of positions) currentPrices[p.market + ':' + p.code] = p.price
-      const today = new Date().toISOString().slice(0, 10)
-      this.netValue = netValueSeries(this.trades, this.cashFlows, currentPrices, rates, today)
       this.dailyPnl = dailyRealized(r.realizedEvents)
-      this.drawdownStats = drawdown(this.netValue)
+      this.refreshSeries(rates)
 
       // 各券商可用现金（未出现在计算中的券商补 0）
       const brokerCash = {}
@@ -231,6 +260,190 @@ export const usePortfolioStore = defineStore('portfolio', {
       } finally {
         this.refreshing = false
       }
+      // 行情更新后顺带增量补齐日K（后台静默执行）
+      this.syncKlines()
+    },
+
+    // ===== 持仓盈亏日历：日K缓存与逐日持仓盈亏 =====
+
+    // 从 IndexedDB 读日K缓存并计算逐日持仓盈亏
+    async loadKlineCache() {
+      try {
+        const v = await getKv(KLINE_KEY)
+        if (v && v.bySymbol) {
+          this.klineCache = { bySymbol: v.bySymbol, updatedAt: v.updatedAt || '' }
+        }
+      } catch {
+        /* 缓存读取失败时用空缓存 */
+      }
+      this.recomputeDailyHolding()
+      // 依据当前缓存与交易记录更新缺失清单；随后后台自动补齐（不阻塞首屏）
+      this._finishKlineSync()
+      this.syncKlines()
+    },
+
+    // ===== 净资产曲线 / 回撤 / 逐日持仓盈亏：行情或日K变化后统一刷新 =====
+
+    // 持仓已由 recompute 算好；这里基于最新持仓、现价与日K缓存刷新三条时间序列
+    refreshSeries(rates) {
+      const r = rates || {
+        usd: this.rates.usd || 7.2,
+        hkd: this.rates.hkd || 0.92
+      }
+      const currentPrices = {}
+      for (const p of this.positions) currentPrices[p.market + ':' + p.code] = p.price
+      const today = new Date().toISOString().slice(0, 10)
+      this.netValue = netValueSeries(this.trades, this.cashFlows, currentPrices, r, today, this.klineCache.bySymbol)
+      this.drawdownStats = drawdown(this.netValue)
+      this.dailyHolding = dailyHoldingPnl(this.trades, this.klineCache.bySymbol, this.rates)
+    },
+
+    recomputeDailyHolding() {
+      this.refreshSeries()
+    },
+
+    // 依据交易记录得出需要的股票清单：{ key: { market, code, name, first(最早建仓日) } }
+    _requiredSymbols() {
+      const map = new Map()
+      for (const t of this.trades) {
+        const key = t.market + ':' + t.code
+        const r = map.get(key)
+        if (r) {
+          if (t.date < r.first) r.first = t.date
+          if (!r.name && t.name) r.name = t.name
+        } else {
+          map.set(key, { market: t.market, code: t.code, name: t.name || t.code, first: t.date })
+        }
+      }
+      return map
+    },
+
+    // 依据当前缓存核算：哪些股票仍缺完整日K（已确认 ok 且覆盖到最早建仓日的才算不缺）
+    _missingSymbols() {
+      const by = this.klineCache.bySymbol || {}
+      const missing = []
+      for (const [key, r] of this._requiredSymbols()) {
+        const meta = by[key]
+        const good = meta && meta.ok === true && meta.from && meta.from <= r.first
+        if (!good) missing.push({ key, market: r.market, code: r.code, name: r.name })
+      }
+      return missing
+    },
+
+    // 一次同步结束后核算最终状态（不发起网络请求）
+    _finishKlineSync() {
+      const missing = this._missingSymbols()
+      this.klineMissing = missing
+      this.klineState = missing.length ? 'missing' : 'ready'
+      this.klineBlocking = false
+    },
+
+    /**
+     * 同步历史日K（幂等）：
+     * - 需要的股票若没有“完整”缓存，会整段从最早建仓日拉取到今日（换设备/清缓存后的首次补全）；
+     * - 已有完整缓存的，仅增量补齐到今日；
+     * - 整段补全期间置 klineBlocking=true，界面应提示“补全中”，而不是把残缺数字显示出来。
+     */
+    async syncKlines() {
+      if (this.klineSyncing || !this.trades.length) {
+        if (!this.trades.length) {
+          this.klineMissing = []
+          this.klineState = 'ready'
+          this.klineBlocking = false
+        }
+        return
+      }
+      const today = fmtDay(new Date())
+      const dow = new Date().getDay()
+      // 周末不增量拉取（整段补全不受影响）
+      const isWeekend = dow === 0 || dow === 6
+      const by = this.klineCache.bySymbol
+      const jobs = []
+      let needFull = false
+      for (const [key, r] of this._requiredSymbols()) {
+        const meta = by[key]
+        // 完整覆盖判定：曾完整拉取过（ok）且缓存起点不晚于最早建仓日
+        const covered = meta && meta.ok === true && meta.from && meta.from <= r.first
+        if (!covered) {
+          // 缺整段：从最早建仓日拉到现在（含旧缓存缺 ok 标记的一次性修复）
+          jobs.push({ key, market: r.market, code: r.code, from: r.first, full: true })
+          needFull = true
+          continue
+        }
+        // 已有完整历史：只增量补当天（交易日才拉；周末交给下一次）
+        if (!isWeekend && meta.updated < today) {
+          const days = meta.days || []
+          const lastBar = days.length ? days[days.length - 1][0] : ''
+          if (lastBar && lastBar < today) {
+            const after = dayAfter(lastBar)
+            if (after <= today) jobs.push({ key, market: r.market, code: r.code, from: after, full: false })
+          }
+        }
+      }
+      if (!jobs.length) {
+        this.klineError = ''
+        this._finishKlineSync()
+        return
+      }
+
+      this.klineSyncing = true
+      this.klineState = 'syncing'
+      this.klineBlocking = needFull
+      this.klineTotal = jobs.length
+      this.klineFetched = 0
+      try {
+        let changed = false
+        // 并发逐只拉取；每只完成后更新进度（供界面显示 x/N）
+        await Promise.all(
+          jobs.map(async (job) => {
+            try {
+              const res = await fetchDayKlines([
+                { market: job.market, code: job.code, from: job.from, to: today }
+              ])
+              const got = res.data && res.data[job.key]
+              if (got && got.days && got.days.length) {
+                const meta = by[job.key] || { from: '', days: [] }
+                const prev = meta.days || []
+                const merged = new Map()
+                for (const [d, c] of prev) merged.set(d, c)
+                for (const [d, c] of got.days) merged.set(d, c)
+                by[job.key] = {
+                  from: meta.from && meta.from <= job.from ? meta.from : job.from,
+                  updated: today,
+                  // 整段补全时按来源是否完整标记；增量补齐不降低已有完整度
+                  ok: job.full ? !!got.complete : meta.ok === true,
+                  days: [...merged.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))
+                }
+                changed = true
+              }
+            } catch {
+              /* 该只失败不影响其它股票 */
+            } finally {
+              this.klineFetched++
+            }
+          })
+        )
+        if (changed) {
+          this.klineCache.updatedAt = new Date().toISOString()
+          this.recomputeDailyHolding()
+          try {
+            await setKv(KLINE_KEY, { bySymbol: by, updatedAt: this.klineCache.updatedAt })
+          } catch {
+            /* 缓存写失败忽略，不影响主流程 */
+          }
+        }
+      } catch (e) {
+        this.klineError = e.message || String(e)
+      } finally {
+        this.klineSyncing = false
+        this._finishKlineSync()
+      }
+    },
+
+    // 手动“重试补全”（用于缺失提示里的按钮）：只补齐目前还缺的股票
+    async retryKlines() {
+      if (this.klineSyncing) return
+      return this.syncKlines()
     },
 
     // 记一笔：写入交易，并同步股票主数据（含标签、所属券商）
@@ -260,6 +473,7 @@ export const usePortfolioStore = defineStore('portfolio', {
       await this.loadData()
       markDirty()
       await persist()
+      this.syncKlines()
     },
 
     // 初始建仓：录入使用本软件之前已持有的股票
@@ -301,6 +515,7 @@ export const usePortfolioStore = defineStore('portfolio', {
       await this.loadData()
       markDirty()
       await persist()
+      this.syncKlines()
     },
 
     // 编辑交易记录
@@ -318,6 +533,7 @@ export const usePortfolioStore = defineStore('portfolio', {
       await this.loadData()
       markDirty()
       await persist()
+      this.syncKlines()
     },
 
     async deleteTrade(id) {
@@ -325,6 +541,7 @@ export const usePortfolioStore = defineStore('portfolio', {
       await this.loadData()
       markDirty()
       await persist()
+      this.syncKlines()
     },
 
     // 新增/更新股票主数据（标签、备注、所属券商等）
@@ -379,6 +596,7 @@ export const usePortfolioStore = defineStore('portfolio', {
       await this.loadData()
       markDirty()
       await persist()
+      this.syncKlines()
     },
 
     async addCashFlow(c) {
@@ -407,6 +625,8 @@ export const usePortfolioStore = defineStore('portfolio', {
       await this.loadData()
       markDirty()
       await persist()
+      // 导入的新账本里可能有不在这台设备缓存中的股票，触发自动补全
+      this.syncKlines()
     },
 
     async clearAll() {
@@ -416,6 +636,19 @@ export const usePortfolioStore = defineStore('portfolio', {
       await this.loadData()
       markDirty()
       await persist()
+      // 清空后日K缓存一并丢弃，避免残留旧股票数据
+      this.klineCache = { bySymbol: {}, updatedAt: '' }
+      this.klineState = 'idle'
+      this.klineMissing = []
+      this.klineBlocking = false
+      this.klineTotal = 0
+      this.klineFetched = 0
+      this.klineError = ''
+      try {
+        await setKv(KLINE_KEY, { bySymbol: {}, updatedAt: '' })
+      } catch {
+        /* 忽略 */
+      }
     },
 
     // ===== 券商管理 =====

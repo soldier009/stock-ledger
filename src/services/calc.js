@@ -164,18 +164,75 @@ export function cumulativeRealized(realizedEvents) {
 }
 
 /**
- * 净资产曲线：从最早交易/资金日期到今天，逐日按当前行情估算
- * 注：因缺少历史行情，历史市值使用最新行情近似，主要用于观察资产规模变化
+ * 净资产曲线：逐交易日按真实收盘价估值
+ * 口径：某日净资产 = 当日收盘后现金 + Σ 持仓股数 × 当日收盘价(前复权) × 汇率。
+ * - 时间轴：持有期间的每个交易日（来自日K缓存）+ 全部交易/资金事件日 + 今天；
+ *   卖出清仓后的空闲日不打点，避免出现大片水平线段。
+ * - 行情：优先使用当日真实收盘价；无当日K线（休市/停牌/缓存缺失）沿用最近收盘；
+ *   缓存尚未覆盖或整只股票无K线时回退到现价/成本价近似，尽量不出现异常塌陷。
+ * - 汇率暂用当前设定值（无历史汇率），跨市场时存在小幅近似。
+ * @param {Array} trades 全部交易记录
+ * @param {Array} cashFlows 资金流水
+ * @param {Object} currentPrices 最新价 { 'A:600000': 12.34 }（仅用于今天/兜底）
+ * @param {Object} rates 汇率 { usd, hkd }
+ * @param {String} currentDate 今日 YYYY-MM-DD
+ * @param {Object} klines 行情缓存 { 'A:600000': { days: [[date, close], ...] } }，days 升序
+ * @returns {Array} [{ date, netValue, cash, marketValue }] 按日期升序
  */
-export function netValueSeries(trades, cashFlows, currentPrices, rates, currentDate) {
-  const allDates = new Set([currentDate])
-  for (const t of trades || []) allDates.add(t.date)
-  for (const c of cashFlows || []) allDates.add(c.date)
-  const sortedDates = [...allDates].sort()
+export function netValueSeries(trades, cashFlows, currentPrices, rates, currentDate, klines) {
+  // 按市场:代码分组交易并排序
+  const symTrades = new Map()
+  for (const t of trades || []) {
+    const key = t.market + ':' + t.code
+    if (!symTrades.has(key)) symTrades.set(key, [])
+    symTrades.get(key).push(t)
+  }
+  for (const list of symTrades.values()) {
+    list.sort((a, b) => (a.date === b.date ? (a.id || 0) - (b.id || 0) : a.date.localeCompare(b.date)))
+  }
+
+  // 归一化日K（升序 [[date, close], ...]）
+  const barsByKey = new Map()
+  if (klines && typeof klines === 'object') {
+    for (const [key, meta] of Object.entries(klines)) {
+      if (meta && Array.isArray(meta.days) && meta.days.length) {
+        barsByKey.set(
+          key,
+          [...meta.days]
+            .filter((x) => x && x[0])
+            .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+        )
+      }
+    }
+  }
+
+  // 收集"持仓期间"的每个交易日：该股票当日收盘后仍有持仓的K线日才打点
+  const heldDays = new Set()
+  for (const [key, tlist] of symTrades) {
+    const bars = barsByKey.get(key)
+    if (!bars) continue
+    let shares = 0
+    let ptr = 0
+    for (const [d] of bars) {
+      while (ptr < tlist.length && tlist[ptr].date <= d) {
+        const t = tlist[ptr]
+        if (t.type === 'buy' || t.type === 'rights' || t.type === 'gift') shares += Number(t.shares) || 0
+        else if (t.type === 'sell') shares = Math.max(0, shares - (Number(t.shares) || 0))
+        ptr++
+      }
+      if (shares > 1e-6) heldDays.add(d)
+    }
+  }
+
+  // 时间轴：全部事件日 + 持仓交易日 + 今天
+  const timeline = new Set([currentDate])
+  for (const t of trades || []) timeline.add(t.date)
+  for (const c of cashFlows || []) timeline.add(c.date)
+  for (const d of heldDays) timeline.add(d)
+  const sortedDates = [...timeline].sort()
 
   const posMap = new Map()
   let cash = 0
-  const points = []
 
   const ensurePos = (market, code) => {
     const key = `${market}:${code}`
@@ -185,54 +242,84 @@ export function netValueSeries(trades, cashFlows, currentPrices, rates, currentD
     return posMap.get(key)
   }
 
-  for (const date of sortedDates) {
-    const dayTrades = (trades || [])
-      .filter((t) => t.date === date)
-      .sort((a, b) => (a.id || 0) - (b.id || 0))
-    for (const t of dayTrades) {
-      const fee = Number(t.fee) || 0
-      const tax = Number(t.tax) || 0
-      const type = t.type
-      if (type === 'buy' || type === 'rights') {
-        const p = ensurePos(t.market, t.code)
-        const cost = Number(t.price) * Number(t.shares) + fee + tax
-        p.basis += cost
-        p.shares += Number(t.shares)
+  const processTrade = (t) => {
+    const fee = Number(t.fee) || 0
+    const tax = Number(t.tax) || 0
+    const type = t.type
+    if (type === 'buy' || type === 'rights') {
+      const p = ensurePos(t.market, t.code)
+      const cost = Number(t.price) * Number(t.shares) + fee + tax
+      p.basis += cost
+      p.shares += Number(t.shares)
+      p.avgCost = p.shares > 0 ? p.basis / p.shares : 0
+      cash -= cost
+    } else if (type === 'sell') {
+      const p = posMap.get(`${t.market}:${t.code}`)
+      if (p && p.shares > 0) {
+        const qty = Math.min(Number(t.shares), p.shares)
+        p.basis -= p.avgCost * qty
+        p.shares -= qty
         p.avgCost = p.shares > 0 ? p.basis / p.shares : 0
-        cash -= cost
-      } else if (type === 'sell') {
-        const key = `${t.market}:${t.code}`
-        const p = posMap.get(key)
-        if (p && p.shares > 0) {
-          const qty = Math.min(Number(t.shares), p.shares)
-          p.basis -= p.avgCost * qty
-          p.shares -= qty
-          p.avgCost = p.shares > 0 ? p.basis / p.shares : 0
-          cash += Number(t.price) * qty - fee - tax
-        }
-      } else if (type === 'div') {
-        const amt = Number(t.amount) || 0
-        cash += amt
-      } else if (type === 'gift') {
-        const p = ensurePos(t.market, t.code)
-        p.shares += Number(t.shares)
-        p.avgCost = p.shares > 0 ? p.basis / p.shares : 0
+        cash += Number(t.price) * qty - fee - tax
       }
+    } else if (type === 'div') {
+      const amt = Number(t.amount) || 0
+      cash += amt
+    } else if (type === 'gift') {
+      const p = ensurePos(t.market, t.code)
+      p.shares += Number(t.shares)
+      p.avgCost = p.shares > 0 ? p.basis / p.shares : 0
     }
+  }
 
-    const dayCash = (cashFlows || [])
-      .filter((c) => c.date === date)
-      .sort((a, b) => (a.id || 0) - (b.id || 0))
-    for (const c of dayCash) {
-      const amt = Number(c.amount) || 0
-      if (c.type === 'deposit') cash += amt
-      else cash -= amt
+  // 逐 key 的"截至某日最近收盘价"滚动指针
+  const priceState = new Map()
+  const priceOf = (key, date, pos) => {
+    let st = priceState.get(key)
+    if (!st) {
+      const bars = barsByKey.get(key) || []
+      st = { bars, ptr: 0, last: 0 }
+      priceState.set(key, st)
+    }
+    while (st.ptr < st.bars.length && st.bars[st.ptr][0] <= date) {
+      st.last = Number(st.bars[st.ptr][1])
+      st.ptr++
+    }
+    const live = currentPrices ? currentPrices[key] : undefined
+    if (date === currentDate && live && live > 0) return live // 今天的点用最新价
+    if (st.last > 0) return st.last
+    if (live && live > 0) return live
+    return pos ? pos.avgCost || 0 : 0 // 无行情时以成本价兜底，避免异常塌陷
+  }
+
+  const allTrades = [...(trades || [])].sort((a, b) =>
+    a.date === b.date ? (a.id || 0) - (b.id || 0) : a.date.localeCompare(b.date)
+  )
+  const allCash = [...(cashFlows || [])].sort((a, b) =>
+    a.date === b.date ? (a.id || 0) - (b.id || 0) : a.date.localeCompare(b.date)
+  )
+  let ti = 0
+  let ci = 0
+  const points = []
+
+  for (const date of sortedDates) {
+    while (ti < allTrades.length && allTrades[ti].date <= date) {
+      if (allTrades[ti].date === date) processTrade(allTrades[ti])
+      ti++
+    }
+    while (ci < allCash.length && allCash[ci].date <= date) {
+      if (allCash[ci].date === date) {
+        const amt = Number(allCash[ci].amount) || 0
+        if (allCash[ci].type === 'deposit') cash += amt
+        else cash -= amt
+      }
+      ci++
     }
 
     let mv = 0
     for (const p of posMap.values()) {
-      if (p.shares > 0) {
-        const price = currentPrices[`${p.market}:${p.code}`] || 0
+      if (p.shares > 1e-6) {
+        const price = priceOf(`${p.market}:${p.code}`, date, p)
         mv += p.shares * price * rateOf(p.market, rates)
       }
     }
@@ -253,6 +340,72 @@ export function dailyRealized(realizedEvents) {
     d.events.push(e)
   }
   return [...map.values()].sort((a, b) => a.date.localeCompare(b.date))
+}
+
+/**
+ * 逐日持仓盈亏（用于「当日持仓盈亏日历」）
+ * 口径：某交易日持仓市值相对前一交易日收盘的变动（已实现落袋部分归买卖日历，不重复计入）
+ *   dayAmount = Σ (当日收盘 - 前收盘) × 当日盘前持股数 × 汇率
+ *   dayBase   = Σ 前收盘 × 当日盘前持股数 × 汇率（作为当日涨跌幅的基准市值）
+ * 说明：分红/送股等除权日前后因复权价与真实股数组合，可能存在小幅估算偏差。
+ * @param {Array} trades 全部交易记录
+ * @param {Object} klines 行情缓存 { 'A:600000': { days: [[date, close], ...] } }，days 升序
+ * @param {Object} rates 汇率 { usd, hkd }
+ * @returns {Array} [{ date, amount, base }] 按日期升序，金额单位 CNY
+ */
+export function dailyHoldingPnl(trades, klines, rates) {
+  // 按市场:代码分组交易
+  const bySym = new Map()
+  for (const t of trades || []) {
+    const key = t.market + ':' + t.code
+    if (!bySym.has(key)) bySym.set(key, [])
+    bySym.get(key).push(t)
+  }
+  for (const list of bySym.values()) {
+    list.sort((a, b) => (a.date === b.date ? (a.id || 0) - (b.id || 0) : a.date.localeCompare(b.date)))
+  }
+
+  const applyTrade = (t, shares) => {
+    if (t.type === 'buy' || t.type === 'rights' || t.type === 'gift') return shares + (Number(t.shares) || 0)
+    if (t.type === 'sell') return Math.max(0, shares - (Number(t.shares) || 0))
+    return shares
+  }
+
+  // date -> { amount, base }
+  const acc = new Map()
+
+  for (const [sym, list] of bySym) {
+    const kl = klines[sym]
+    if (!kl || !Array.isArray(kl.days) || kl.days.length < 2) continue
+    const rate = rateOf(sym.split(':')[0], rates)
+    let shares = 0
+    let ptr = 0
+    for (let i = 0; i < kl.days.length; i++) {
+      const d = kl.days[i][0]
+      const c = Number(kl.days[i][1])
+      while (ptr < list.length && list[ptr].date < d) {
+        shares = applyTrade(list[ptr], shares)
+        ptr++
+      }
+      if (i > 0 && shares > 0) {
+        const pc = Number(kl.days[i - 1][1])
+        if (c > 0 && pc > 0) {
+          const e = acc.get(d) || { amount: 0, base: 0 }
+          e.amount += (c - pc) * shares * rate
+          e.base += pc * shares * rate
+          acc.set(d, e)
+        }
+      }
+      while (ptr < list.length && list[ptr].date === d) {
+        shares = applyTrade(list[ptr], shares)
+        ptr++
+      }
+    }
+  }
+
+  return [...acc.entries()]
+    .map(([date, v]) => ({ date, amount: v.amount, base: v.base }))
+    .sort((a, b) => a.date.localeCompare(b.date))
 }
 
 /**

@@ -7,12 +7,11 @@ import { drawdown } from '../services/calc'
 import { fmtMoney, fmtNum, fmtPct, pnlClass } from '../utils/format'
 
 const portfolio = usePortfolioStore()
-const activeTab = ref('netValue')
+const activeTab = ref('curve')
 const calendarDate = ref(dayjs())
 const calMode = ref('month')
 
 const curveRef = ref(null)
-const netValueRef = ref(null)
 const drawdownRef = ref(null)
 const monthlyRef = ref(null)
 const yearlyRef = ref(null)
@@ -50,25 +49,6 @@ function drawCurve() {
       smooth: true, symbol: 'circle', symbolSize: 6, lineStyle: { color: '#dc2626', width: 2.5 },
       itemStyle: { color: '#dc2626' },
       areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(220,38,38,0.22)' }, { offset: 1, color: 'rgba(220,38,38,0.02)' }] } }
-    }]
-  })
-}
-
-function drawNetValue() {
-  const chart = initChart(netValueRef, 'netValue')
-  if (!chart) return
-  const data = portfolio.netValue
-  if (!data.length) { chart.clear(); return }
-  chart.setOption({
-    ...commonOption(),
-    tooltip: { trigger: 'axis', valueFormatter: (v) => '¥' + fmtNum(v, 0) },
-    xAxis: { type: 'category', boundaryGap: false, data: data.map((d) => d.date.slice(5)), axisLabel: { color: '#94a3b8', fontSize: 10 } },
-    yAxis: { type: 'value', axisLabel: { color: '#94a3b8', fontSize: 10, formatter: (v) => (v >= 10000 ? (v / 10000).toFixed(0) + '万' : v) }, splitLine: { lineStyle: { color: '#f1f5f9' } } },
-    series: [{
-      name: '净资产', type: 'line', data: data.map((d) => Math.round(d.netValue * 100) / 100),
-      smooth: true, symbol: 'none', lineStyle: { color: '#dc2626', width: 2 },
-      itemStyle: { color: '#dc2626' },
-      areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(220,38,38,0.18)' }, { offset: 1, color: 'rgba(220,38,38,0.01)' }] } }
     }]
   })
 }
@@ -163,7 +143,7 @@ function drawYearly() {
   })
 }
 
-const drawMap = { curve: drawCurve, netValue: drawNetValue, monthly: drawMonthly, yearly: drawYearly }
+const drawMap = { curve: drawCurve, monthly: drawMonthly, yearly: drawYearly }
 
 function redraw() {
   drawMap[activeTab.value]?.()
@@ -322,9 +302,6 @@ function nextYear() { calendarDate.value = calendarDate.value.add(1, 'year') }
 
     <div class="card">
       <el-tabs v-model="activeTab" class="analysis-tabs">
-        <el-tab-pane label="净值曲线" name="netValue">
-          <div ref="netValueRef" class="chart"></div>
-        </el-tab-pane>
         <el-tab-pane label="收益曲线" name="curve">
           <div ref="curveRef" class="chart"></div>
         </el-tab-pane>
@@ -362,10 +339,10 @@ function nextYear() { calendarDate.value = calendarDate.value.add(1, 'year') }
       </el-tabs>
     </div>
 
-    <!-- 盈亏日历 -->
+    <!-- 买卖盈亏日历 -->
     <div class="card calendar-card">
       <div class="row between" style="margin-bottom: 12px">
-        <div class="section-title">盈亏日历</div>
+        <div class="section-title">买卖盈亏日历</div>
         <div class="pie-switch">
           <span :class="{ active: calMode === 'month' }" @click="calMode = 'month'">月</span>
           <span :class="{ active: calMode === 'year' }" @click="calMode = 'year'">年</span>
