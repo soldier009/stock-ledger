@@ -153,11 +153,14 @@ function goMonth(key) {
 // ===== 点击日期查看当日持仓盈亏明细 =====
 const showDayDrawer = ref(false)
 const selDay = ref('')
+const ddTab = ref('gain') // 'gain' | 'loss'
 
 function openDay(dateStr) {
   const row = hMap.value[dateStr]
   if (!row || row.amount === 0) return
   selDay.value = dateStr
+  // 默认优先显示金额绝对值更大的一边
+  ddTab.value = Math.abs(lossTotal.value) > Math.abs(gainTotal.value) ? 'loss' : 'gain'
   showDayDrawer.value = true
 }
 
@@ -537,47 +540,51 @@ onBeforeUnmount(() => {
         <span class="dd-date">{{ dayTitle }}</span>
         <span class="dd-title">当日持仓盈亏明细</span>
       </div>
-      <div class="dd-cols">
-        <div class="dd-col">
-          <div class="dd-summary">
-            <span class="dd-sum-label">盈利</span>
-            <span class="dd-sum-num up">{{ moneyCol(gainTotal) }}</span>
-            <span v-if="gainRows.length" class="dd-sum-count">{{ gainRows.length }} 只</span>
-          </div>
-          <div v-if="gainRows.length" class="dd-items">
-            <div v-for="(it, i) in gainRows" :key="'g' + i" class="dd-item">
-              <div class="dd-item-main">
-                <span class="dd-name">{{ it.name }}</span>
-                <span class="dd-sub">{{ it.shares }}股</span>
-              </div>
-              <div class="dd-item-side">
-                <span class="dd-amt up">{{ moneyCol(it.amount) }}</span>
-                <span class="dd-sub">{{ pctCol(it.changePct) }}</span>
-              </div>
+      <div class="dd-tabs">
+        <div class="dd-tab up" :class="{ active: ddTab === 'gain' }" @click="ddTab = 'gain'">
+          <div class="dd-tab-label">盈利金额</div>
+          <div class="dd-tab-num up">{{ moneyCol(gainTotal) }}</div>
+          <div class="dd-tab-count">{{ gainRows.length }} 只</div>
+        </div>
+        <div class="dd-tab down" :class="{ active: ddTab === 'loss' }" @click="ddTab = 'loss'">
+          <div class="dd-tab-label">亏损金额</div>
+          <div class="dd-tab-num down">{{ moneyCol(lossTotal) }}</div>
+          <div class="dd-tab-count">{{ lossRows.length }} 只</div>
+        </div>
+      </div>
+
+      <div class="dd-list-head">
+        <span>名称代码</span>
+        <span>{{ ddTab === 'gain' ? '盈利额' : '亏损额' }} / 收益率</span>
+      </div>
+
+      <div class="dd-list">
+        <template v-if="ddTab === 'gain'">
+          <div v-for="(it, i) in gainRows" :key="'g' + i" class="dd-item">
+            <div class="dd-item-main">
+              <span class="dd-name">{{ it.name }}</span>
+              <span class="dd-sub">{{ it.shares }}股</span>
+            </div>
+            <div class="dd-item-side">
+              <span class="dd-amt up">{{ moneyCol(it.amount) }}</span>
+              <span class="dd-sub">{{ pctCol(it.changePct) }}</span>
             </div>
           </div>
-          <div v-else class="dd-empty">当日无盈利股票</div>
-        </div>
-        <div class="dd-col">
-          <div class="dd-summary">
-            <span class="dd-sum-label">亏损</span>
-            <span class="dd-sum-num down">{{ moneyCol(lossTotal) }}</span>
-            <span v-if="lossRows.length" class="dd-sum-count">{{ lossRows.length }} 只</span>
-          </div>
-          <div v-if="lossRows.length" class="dd-items">
-            <div v-for="(it, i) in lossRows" :key="'l' + i" class="dd-item">
-              <div class="dd-item-main">
-                <span class="dd-name">{{ it.name }}</span>
-                <span class="dd-sub">{{ it.shares }}股</span>
-              </div>
-              <div class="dd-item-side">
-                <span class="dd-amt down">{{ moneyCol(it.amount) }}</span>
-                <span class="dd-sub">{{ pctCol(it.changePct) }}</span>
-              </div>
+          <div v-if="!gainRows.length" class="dd-empty">当日无盈利股票</div>
+        </template>
+        <template v-else>
+          <div v-for="(it, i) in lossRows" :key="'l' + i" class="dd-item">
+            <div class="dd-item-main">
+              <span class="dd-name">{{ it.name }}</span>
+              <span class="dd-sub">{{ it.shares }}股</span>
+            </div>
+            <div class="dd-item-side">
+              <span class="dd-amt down">{{ moneyCol(it.amount) }}</span>
+              <span class="dd-sub">{{ pctCol(it.changePct) }}</span>
             </div>
           </div>
-          <div v-else class="dd-empty">当日无亏损股票</div>
-        </div>
+          <div v-if="!lossRows.length" class="dd-empty">当日无亏损股票</div>
+        </template>
       </div>
     </el-drawer>
 
@@ -835,38 +842,73 @@ onBeforeUnmount(() => {
   font-size: 12px;
   color: var(--text-2);
 }
-.dd-cols {
+.dd-tabs {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 14px;
+  gap: 10px;
+  margin-bottom: 12px;
 }
-.dd-col {
-  background: #f8fafc;
+.dd-tab {
+  position: relative;
+  background: #fff;
+  border: 1px solid #f1f5f9;
   border-radius: 12px;
   padding: 12px;
   display: flex;
   flex-direction: column;
-  min-height: 120px;
+  gap: 4px;
+  cursor: pointer;
+  overflow: hidden;
 }
-.dd-summary {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin-bottom: 10px;
+.dd-tab::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  opacity: 0;
 }
-.dd-sum-label {
+.dd-tab.up.active::before {
+  background: #dc2626;
+  opacity: 1;
+}
+.dd-tab.down.active::before {
+  background: #16a34a;
+  opacity: 1;
+}
+.dd-tab.up.active {
+  background: #fff7f8;
+  border-color: #fecdd3;
+}
+.dd-tab.down.active {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+.dd-tab-label {
   font-size: 12px;
   color: var(--text-2);
 }
-.dd-sum-num {
-  font-size: 21px;
+.dd-tab-num {
+  font-size: 20px;
   font-weight: 800;
 }
-.dd-sum-count {
+.dd-tab-count {
   font-size: 11px;
   color: #94a3b8;
+  margin-top: 4px;
+  align-self: flex-end;
 }
-.dd-items {
+.dd-list-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  color: #94a3b8;
+  padding: 0 10px 6px;
+}
+.dd-list {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -909,10 +951,5 @@ onBeforeUnmount(() => {
   font-size: 12px;
   padding: 24px 0;
   text-align: center;
-}
-@media (max-width: 520px) {
-  .dd-cols {
-    grid-template-columns: 1fr;
-  }
 }
 </style>
