@@ -180,9 +180,53 @@ export function cumulativeRealized(realizedEvents) {
  * @returns {Array} [{ date, netValue, cash, marketValue }] 按日期升序
  */
 export function netValueSeries(trades, cashFlows, currentPrices, rates, currentDate, klines) {
+  // —— 补录历史持仓（初始建仓）并入净资产序列起点 ——
+  // 「新建仓」录入的是本软件记账前就已持有的股票，其买入与自动入金都发生在补录当天；
+  // 若仅从补录日开始计算，会在该日凭空产生“记账前浮盈亏”的台阶。
+  // 这里把初始建仓的买入/自动入金视同发生在整个净资产序列最早一天：
+  // 该持仓从曲线第一天起就存在，中途不再出现补录造成的跳变；
+  // 其市值自起点起按当日真实收盘价估值（需要自起点起的日K，由 store 负责补拉）。
+  // 普通入金/出金保持原发生日，在曲线上天然产生台阶（“有反应”）。
+  const rawTrades = [...(trades || [])]
+  const rawCash = [...(cashFlows || [])]
+  let startDate = currentDate
+  for (const t of rawTrades) if (t.date < startDate) startDate = t.date
+  for (const c of rawCash) if (c.date < startDate) startDate = c.date
+  const isInitialBuy = (t) => !!(t.origin === 'initial' && (t.type === 'buy' || t.type === 'rights'))
+  const wsTrades = rawTrades.map((t) =>
+    isInitialBuy(t) && t.date > startDate ? { ...t, date: startDate } : t
+  )
+  const wsCash = rawCash.map((c) =>
+    c.origin === 'initial' && c.type === 'deposit' && c.date > startDate ? { ...c, date: startDate } : c
+  )
+
+  // 按原始发生日记录资金事件注解（供走势图提示出入金 / 补录并入起点信息）
+  const noteMap = new Map()
+  const addNote = (date, note) => {
+    if (!noteMap.has(date)) noteMap.set(date, [])
+    noteMap.get(date).push(note)
+  }
+  for (const c of rawCash) {
+    const amt = Number(c.amount) || 0
+    if (amt <= 0) continue
+    if (c.origin === 'initial' && c.type === 'deposit') {
+      addNote(c.date, { kind: 'initial', label: '初始建仓并入起点（自动入金）', amount: amt })
+    } else if (c.type === 'deposit') {
+      addNote(c.date, { kind: 'flow', type: 'deposit', amount: amt })
+    } else if (c.type === 'withdraw') {
+      addNote(c.date, { kind: 'flow', type: 'withdraw', amount: amt })
+    }
+  }
+  for (const t of rawTrades) {
+    if (isInitialBuy(t)) {
+      const cost = (Number(t.price) || 0) * (Number(t.shares) || 0)
+      addNote(t.date, { kind: 'initialTrade', label: t.name || t.code, amount: cost })
+    }
+  }
+
   // 按市场:代码分组交易并排序
   const symTrades = new Map()
-  for (const t of trades || []) {
+  for (const t of wsTrades) {
     const key = t.market + ':' + t.code
     if (!symTrades.has(key)) symTrades.set(key, [])
     symTrades.get(key).push(t)
@@ -226,8 +270,8 @@ export function netValueSeries(trades, cashFlows, currentPrices, rates, currentD
 
   // 时间轴：全部事件日 + 持仓交易日 + 今天
   const timeline = new Set([currentDate])
-  for (const t of trades || []) timeline.add(t.date)
-  for (const c of cashFlows || []) timeline.add(c.date)
+  for (const t of wsTrades) timeline.add(t.date)
+  for (const c of wsCash) timeline.add(c.date)
   for (const d of heldDays) timeline.add(d)
   const sortedDates = [...timeline].sort()
 
@@ -292,10 +336,10 @@ export function netValueSeries(trades, cashFlows, currentPrices, rates, currentD
     return pos ? pos.avgCost || 0 : 0 // 无行情时以成本价兜底，避免异常塌陷
   }
 
-  const allTrades = [...(trades || [])].sort((a, b) =>
+  const allTrades = [...wsTrades].sort((a, b) =>
     a.date === b.date ? (a.id || 0) - (b.id || 0) : a.date.localeCompare(b.date)
   )
-  const allCash = [...(cashFlows || [])].sort((a, b) =>
+  const allCash = [...wsCash].sort((a, b) =>
     a.date === b.date ? (a.id || 0) - (b.id || 0) : a.date.localeCompare(b.date)
   )
   let ti = 0
@@ -323,7 +367,7 @@ export function netValueSeries(trades, cashFlows, currentPrices, rates, currentD
         mv += p.shares * price * rateOf(p.market, rates)
       }
     }
-    points.push({ date, netValue: cash + mv, cash, marketValue: mv })
+    points.push({ date, netValue: cash + mv, cash, marketValue: mv, notes: noteMap.get(date) || [] })
   }
   return points
 }

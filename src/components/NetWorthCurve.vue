@@ -12,6 +12,7 @@ const emit = defineEmits(['update:modelValue'])
 const portfolio = usePortfolioStore()
 const chartRef = ref(null)
 let chart = null
+let ro = null
 
 const visible = computed({
   get: () => props.modelValue,
@@ -61,6 +62,28 @@ const latest = computed(() => {
   return s.length ? s[s.length - 1] : { netValue: portfolio.totals.totalAssets }
 })
 
+// 净资产曲线口径说明：用于确认“补录历史持仓（初始建仓）并入起点”是否生效
+const initialInfo = computed(() => {
+  const buys = portfolio.trades.filter((t) => t.origin === 'initial' && (t.type === 'buy' || t.type === 'rights'))
+  const deps = portfolio.cashFlows.filter((c) => c.origin === 'initial' && c.type === 'deposit')
+  const depSum = deps.reduce((a, c) => a + (Number(c.amount) || 0), 0)
+  const series = portfolio.netValue
+  const start = series.length ? series[0].date : ''
+  const initDates = [...buys.map((t) => t.date), ...deps.map((c) => c.date)].sort()
+  const earliestInit = initDates.length ? initDates[0] : ''
+  if (!buys.length || !depSum || !start || !earliestInit) {
+    return { has: false }
+  }
+  return {
+    has: true,
+    merged: earliestInit > start, // 补录日晚于曲线起点 → 已真正并入更早的起点
+    count: buys.length,
+    depSum,
+    start,
+    initDate: earliestInit
+  }
+})
+
 // 日视图：所选时间区间内净资产的变化金额（区间首条 → 最新一条）
 const periodChange = computed(() => {
   const data = dayData.value
@@ -95,24 +118,89 @@ function baseOption() {
   }
 }
 
+// 金额简写（1.2万 等），用于折线上的资金事件标签
+function moneyShort(v) {
+  const n = Number(v) || 0
+  if (Math.abs(n) >= 10000) {
+    const w = n / 10000
+    return (Math.abs(w) >= 100 ? w.toFixed(0) : w.toFixed(1)) + '万'
+  }
+  return String(Math.round(n))
+}
+
+function dayRows(list) {
+  return (list || []).map((d) => {
+    const notes = d.notes || []
+    return {
+      date: d.date,
+      v: Math.round(d.netValue * 100) / 100,
+      cash: Math.round(d.cash * 100) / 100,
+      mv: Math.round(d.marketValue * 100) / 100,
+      flows: notes.filter((n) => n.kind === 'flow'),
+      initials: notes.filter((n) => n.kind === 'initial' || n.kind === 'initialTrade')
+    }
+  })
+}
+
+// 当天普通出入金的净变动额
+function netFlow(flows) {
+  return (flows || []).reduce((a, f) => a + (f.type === 'deposit' ? f.amount : -f.amount), 0)
+}
+
+// 批量把资金事件并入 month/year 的统计
+function aggFlows(target, p) {
+  for (const n of p.notes || []) {
+    if (n.kind !== 'flow') continue
+    if (n.type === 'deposit') target.deposit += n.amount
+    else target.withdraw += n.amount
+  }
+}
+
 function drawDay() {
   const data = dayData.value
   if (!data.length) {
     chart.clear()
     return
   }
+  const rows = dayRows(data)
+  const xs = data.map((d) => d.date.slice(5))
+  // 普通出入金发生日在折线上加标记（补录的历史持仓已并入起点，不在此标记）
+  const marks = []
+  rows.forEach((r, i) => {
+    const net = netFlow(r.flows)
+    if (Math.abs(net) > 0.005) marks.push({ coord: [xs[i], r.v], net })
+  })
   chart.setOption({
     ...baseOption(),
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params) => {
+        const p = params && params[0]
+        const r = p ? rows[p.dataIndex] : null
+        if (!r) return ''
+        const lines = [
+          `净资产：¥${fmtNum(r.v, 0)}`,
+          `　现金：¥${fmtNum(r.cash, 0)}　持仓市值：¥${fmtNum(r.mv, 0)}`
+        ]
+        for (const f of r.flows) {
+          lines.push((f.type === 'deposit' ? '入金 +' : '出金 -') + fmtMoney(f.amount, 0))
+        }
+        for (const n of r.initials) {
+          lines.push('初始建仓并入起点' + (n.kind === 'initial' ? '：' + fmtMoney(n.amount, 0) : '：' + n.label))
+        }
+        return `<b>${r.date}</b>` + lines.map((s) => `<div>${s}</div>`).join('')
+      }
+    },
     xAxis: {
       ...baseOption().xAxis,
       boundaryGap: false,
-      data: data.map((d) => d.date.slice(5))
+      data: xs
     },
     yAxis: baseOption().yAxis,
     series: [{
       name: '净资产',
       type: 'line',
-      data: data.map((d) => Math.round(d.netValue * 100) / 100),
+      data: rows.map((r) => r.v),
       smooth: true,
       symbol: 'none',
       lineStyle: { color: '#dc2626', width: 2 },
@@ -125,6 +213,18 @@ function drawDay() {
             { offset: 1, color: 'rgba(220,38,38,0.01)' }
           ]
         }
+      },
+      markPoint: {
+        symbol: 'pin',
+        symbolSize: 36,
+        itemStyle: { color: '#d97706' },
+        label: {
+          show: true,
+          color: '#fff',
+          fontSize: 10,
+          formatter: (p) => (p.data.net >= 0 ? '入+' + moneyShort(p.data.net) : '出-' + moneyShort(-p.data.net))
+        },
+        data: marks
       }
     }]
   })
@@ -134,10 +234,17 @@ function monthData() {
   const map = new Map()
   for (const p of portfolio.netValue) {
     const key = p.date.slice(0, 7)
-    map.set(key, p.netValue)
+    let m = map.get(key)
+    if (!m) {
+      m = { month: key, deposit: 0, withdraw: 0, netValue: p.netValue }
+      map.set(key, m)
+    } else {
+      m.netValue = p.netValue
+    }
+    aggFlows(m, p)
   }
-  return [...map.entries()]
-    .map(([month, netValue]) => ({ month, netValue: Math.round(netValue * 100) / 100 }))
+  return [...map.values()]
+    .map((m) => ({ ...m, netValue: Math.round(m.netValue * 100) / 100 }))
     .sort((a, b) => a.month.localeCompare(b.month))
 }
 
@@ -145,10 +252,17 @@ function yearData() {
   const map = new Map()
   for (const p of portfolio.netValue) {
     const key = p.date.slice(0, 4)
-    map.set(key, p.netValue)
+    let m = map.get(key)
+    if (!m) {
+      m = { year: key, deposit: 0, withdraw: 0, netValue: p.netValue }
+      map.set(key, m)
+    } else {
+      m.netValue = p.netValue
+    }
+    aggFlows(m, p)
   }
-  return [...map.entries()]
-    .map(([year, netValue]) => ({ year, netValue: Math.round(netValue * 100) / 100 }))
+  return [...map.values()]
+    .map((m) => ({ ...m, netValue: Math.round(m.netValue * 100) / 100 }))
     .sort((a, b) => a.year.localeCompare(b.year))
 }
 
@@ -160,6 +274,18 @@ function drawMonth() {
   }
   chart.setOption({
     ...baseOption(),
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params) => {
+        const p = params && params[0]
+        const r = p ? data[p.dataIndex] : null
+        if (!r) return ''
+        const lines = [`期末净资产：¥${fmtNum(r.netValue, 0)}`]
+        if (r.deposit) lines.push('当月入金 +' + fmtMoney(r.deposit, 0))
+        if (r.withdraw) lines.push('当月出金 -' + fmtMoney(r.withdraw, 0))
+        return `<b>${r.month}</b>` + lines.map((s) => `<div>${s}</div>`).join('')
+      }
+    },
     xAxis: {
       ...baseOption().xAxis,
       data: data.map((d) => d.month)
@@ -185,6 +311,18 @@ function drawYear() {
   }
   chart.setOption({
     ...baseOption(),
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params) => {
+        const p = params && params[0]
+        const r = p ? data[p.dataIndex] : null
+        if (!r) return ''
+        const lines = [`年末净资产：¥${fmtNum(r.netValue, 0)}`]
+        if (r.deposit) lines.push('全年入金 +' + fmtMoney(r.deposit, 0))
+        if (r.withdraw) lines.push('全年出金 -' + fmtMoney(r.withdraw, 0))
+        return `<b>${r.year}年</b>` + lines.map((s) => `<div>${s}</div>`).join('')
+      }
+    },
     xAxis: {
       ...baseOption().xAxis,
       data: data.map((d) => d.year + '年')
@@ -203,12 +341,48 @@ function drawYear() {
 }
 
 function draw() {
-  if (!chartRef.value) return
-  if (!chart) chart = echarts.init(chartRef.value)
+  const el = chartRef.value
+  if (!el || !el.offsetWidth || !el.offsetHeight) return // 容器布局未完成，等 ResizeObserver 触发后再画
+  // 关闭时图表 DOM 已被 v-if 移除：若实例仍指向旧画布则重建，否则重开后会空白
+  if (chart && (!chart.getDom || !chart.getDom().isConnected)) {
+    try { chart.dispose() } catch (e) { /* ignore */ }
+    chart = null
+  }
+  if (!chart) chart = echarts.init(el)
   chart.clear()
   if (mode.value === 'day') drawDay()
   else if (mode.value === 'month') drawMonth()
   else drawYear()
+}
+
+function destroyChart() {
+  if (ro) {
+    ro.disconnect()
+    ro = null
+  }
+  if (chart) {
+    try { chart.dispose() } catch (e) { /* ignore */ }
+    chart = null
+  }
+}
+
+function watchChartSize(on) {
+  const el = chartRef.value
+  if (!el || typeof ResizeObserver === 'undefined') return
+  if (on && !ro) {
+    ro = new ResizeObserver(() => {
+      if (!chartRef.value) return
+      if (chart) {
+        chart.resize()
+      } else if (chartRef.value.offsetWidth && chartRef.value.offsetHeight) {
+        draw()
+      }
+    })
+    ro.observe(el)
+  } else if (!on && ro) {
+    ro.disconnect()
+    ro = null
+  }
 }
 
 function close() {
@@ -225,7 +399,13 @@ watch(visible, async (v) => {
     mode.value = 'day'
     dayRange.value = '1m'
     await nextTick()
+    // 打开即挂载了新画布容器：用 ResizeObserver 兜底“布局未完成/尺寸为 0”，并随容器自适应
+    watchChartSize(true)
     draw()
+  } else {
+    // 关闭：图表 DOM 即将被 v-if 移除，销毁实例，避免下次打开复用失效实例导致空白
+    await nextTick()
+    destroyChart()
   }
 })
 
@@ -235,15 +415,17 @@ function onResize() {
 
 onMounted(() => {
   window.addEventListener('resize', onResize)
-  if (visible.value) draw()
+  if (visible.value) {
+    nextTick(() => {
+      watchChartSize(true)
+      draw()
+    })
+  }
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onResize)
-  if (chart) {
-    chart.dispose()
-    chart = null
-  }
+  destroyChart()
 })
 </script>
 
@@ -292,6 +474,16 @@ onBeforeUnmount(() => {
             :class="{ active: dayRange === r.key }"
             @click="dayRange = r.key"
           >{{ r.label }}</span>
+        </div>
+
+        <div v-if="initialInfo.has" class="nw-note">
+          <template v-if="initialInfo.merged">
+            已将 {{ initialInfo.count }} 笔补录历史持仓（本金 ¥{{ fmtNum(initialInfo.depSum, 0) }}）
+            并入曲线起点 {{ initialInfo.start }}，中途无跳变
+          </template>
+          <template v-else>
+            {{ initialInfo.count }} 笔补录历史持仓发生于 {{ initialInfo.start }}（曲线起点），已按起点计入
+          </template>
         </div>
 
         <div ref="chartRef" class="nw-chart"></div>
@@ -416,6 +608,17 @@ onBeforeUnmount(() => {
   background: #fdecec;
   color: #dc2626;
   font-weight: 600;
+}
+.nw-note {
+  flex-shrink: 0;
+  margin: 10px 16px 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #d97706;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  padding: 6px 10px;
 }
 .nw-chart {
   flex: 1;

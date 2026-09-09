@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS cash_flows (
   type TEXT NOT NULL,
   amount REAL NOT NULL,
   note TEXT DEFAULT '',
-  broker TEXT DEFAULT ''
+  broker TEXT DEFAULT '',
+  origin TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS trades (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,6 +43,7 @@ CREATE TABLE IF NOT EXISTS trades (
   amount REAL NOT NULL DEFAULT 0,
   note TEXT DEFAULT '',
   broker TEXT DEFAULT '',
+  origin TEXT DEFAULT '',
   created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 CREATE TABLE IF NOT EXISTS stocks (
@@ -72,6 +74,9 @@ function migrate() {
   try { run('ALTER TABLE stocks ADD COLUMN broker TEXT DEFAULT ""') } catch {}
   try { run('ALTER TABLE trades ADD COLUMN broker TEXT DEFAULT ""') } catch {}
   try { run('ALTER TABLE cash_flows ADD COLUMN broker TEXT DEFAULT ""') } catch {}
+  // 初始建仓标记列（老库无此列时补列）
+  try { run('ALTER TABLE trades ADD COLUMN origin TEXT DEFAULT ""') } catch {}
+  try { run('ALTER TABLE cash_flows ADD COLUMN origin TEXT DEFAULT ""') } catch {}
   // 确保至少存在一个券商账户
   const cnt = get('SELECT COUNT(*) AS c FROM brokers')
   if (!cnt || cnt.c === 0) run('INSERT INTO brokers (name) VALUES (?)', [DEFAULT_BROKER])
@@ -87,6 +92,49 @@ function migrate() {
   run("UPDATE stocks SET broker = ? WHERE broker IS NULL OR broker = ''", [def])
   run("UPDATE trades SET broker = ? WHERE broker IS NULL OR broker = ''", [def])
   run("UPDATE cash_flows SET broker = ? WHERE broker IS NULL OR broker = ''", [def])
+  // 旧库回填「初始建仓」标记：新建仓会自动生成一笔 note 为
+  // “初始建仓-自动入金（名称或代码）”的入金，且同券商有一笔金额相同的买入。
+  // 依次按「同日精确」「日期错位兜底」两种口径匹配；仅当金额吻合且备注中的代码/名称
+  // 唯一命中（或当日同券商金额唯一）时才回填，避免误标普通买入。
+  const initRows = all("SELECT * FROM cash_flows WHERE origin IS NULL OR origin = ''")
+  for (const c of initRows) {
+    if (c.type !== 'deposit' || !c.note || !String(c.note).startsWith('初始建仓-自动入金（')) continue
+    const amt = Number(c.amount) || 0
+    if (amt <= 0) continue
+    const open = String(c.note).indexOf('（')
+    const close = String(c.note).lastIndexOf('）')
+    if (open < 0 || close <= open) continue
+    const token = String(c.note).slice(open + 1, close).trim()
+    if (!token) continue
+    // 取前后 7 天窗口内的“未标记”买入，覆盖买入日期被改而自动入金未联动的情况
+    const buys = all(
+      "SELECT id, date, market, code, name, shares, price FROM trades " +
+        "WHERE type = 'buy' AND (origin IS NULL OR origin = '') AND broker = ? " +
+        "AND date BETWEEN date(?, '-7 days') AND date(?, '+7 days') ORDER BY date, id",
+      [c.broker, c.date, c.date]
+    )
+    // 名称可能被补录后改名/夹带空白，做宽松匹配
+    const amountMatches = (t) => {
+      const cost = (Number(t.price) || 0) * (Number(t.shares) || 0)
+      return Math.abs(cost - amt) <= 0.011
+    }
+    const tokenMatches = (t) => token === t.code || token === String(t.name || '').trim()
+    // 1) 同日 + 备注中的代码/名称吻合
+    let hit = buys.find((t) => t.date === c.date && amountMatches(t) && tokenMatches(t))
+    // 2) 备注确为“初始建仓-自动入金”时，当日同券商金额唯一的买入基本就是其对应记录
+    if (!hit) {
+      const cands = buys.filter((t) => t.date === c.date && amountMatches(t))
+      if (cands.length === 1) hit = cands[0]
+    }
+    // 3) 日期错位兜底：跨前后 7 天，同券商 + 同金额 + 备注中的代码/名称吻合且唯一时才命中
+    if (!hit) {
+      const near = buys.filter((t) => amountMatches(t) && tokenMatches(t))
+      if (near.length === 1) hit = near[0]
+    }
+    if (!hit) continue
+    run("UPDATE trades SET origin = 'initial' WHERE id = ?", [hit.id])
+    run("UPDATE cash_flows SET origin = 'initial' WHERE id = ?", [c.id])
+  }
 }
 
 function openIDB() {
@@ -169,6 +217,8 @@ export async function initDB() {
       const saved = await idbGet(FILE_KEY)
       db = saved && saved.bytes ? new SQL.Database(saved.bytes) : new SQL.Database()
       db.run(SCHEMA)
+      // 老库结构迁移（补列/回填初始建仓标记等），需在读写业务数据前执行
+      migrate()
       localChangedAt = readChangedAtFromDb()
     })()
   }

@@ -328,7 +328,7 @@ export const usePortfolioStore = defineStore('portfolio', {
       this.refreshSeries()
     },
 
-    // 依据交易记录得出需要的股票清单：{ key: { market, code, name, first(最早建仓日) } }
+    // 依据交易记录得出需要的股票清单：{ key: { market, code, name, first(最早建仓日), initial? } }
     _requiredSymbols() {
       const map = new Map()
       for (const t of this.trades) {
@@ -336,9 +336,30 @@ export const usePortfolioStore = defineStore('portfolio', {
         const r = map.get(key)
         if (r) {
           if (t.date < r.first) r.first = t.date
+          if (t.origin === 'initial' && (t.type === 'buy' || t.type === 'rights')) r.initial = true
           if (!r.name && t.name) r.name = t.name
         } else {
-          map.set(key, { market: t.market, code: t.code, name: t.name || t.code, first: t.date })
+          map.set(key, {
+            market: t.market,
+            code: t.code,
+            name: t.name || t.code,
+            first: t.date,
+            initial: !!(t.origin === 'initial' && (t.type === 'buy' || t.type === 'rights'))
+          })
+        }
+      }
+      // 初始建仓（补录历史持仓）会被并入净资产序列起点，需要自整个序列最早日起的行情才能渲染
+      // （只覆盖到补录日本身会造出“成本价→当日市价”的假台阶）
+      let dataStart = ''
+      for (const t of this.trades) {
+        if (!dataStart || t.date < dataStart) dataStart = t.date
+      }
+      for (const c of this.cashFlows) {
+        if (!dataStart || c.date < dataStart) dataStart = c.date
+      }
+      if (dataStart) {
+        for (const r of map.values()) {
+          if (r.initial && dataStart < r.first) r.first = dataStart
         }
       }
       return map
@@ -513,15 +534,16 @@ export const usePortfolioStore = defineStore('portfolio', {
       const tagArr = Array.isArray(tag) ? tag.filter(Boolean) : []
       const tagStr = JSON.stringify(tagArr)
       run(
-        'INSERT INTO trades (date, market, code, name, type, shares, price, fee, tax, amount, note, broker) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-        [date, market, code, name || '', 'buy', qty, price, 0, 0, 0, note || '', b]
+        'INSERT INTO trades (date, market, code, name, type, shares, price, fee, tax, amount, note, broker, origin) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        [date, market, code, name || '', 'buy', qty, price, 0, 0, 0, note || '', b, 'initial']
       )
-      run('INSERT INTO cash_flows (date, type, amount, note, broker) VALUES (?,?,?,?,?)', [
+      run('INSERT INTO cash_flows (date, type, amount, note, broker, origin) VALUES (?,?,?,?,?,?)', [
         date,
         'deposit',
         cost,
         `初始建仓-自动入金（${name || code}）`,
-        b
+        b,
+        'initial'
       ])
       const exist = get('SELECT id FROM stocks WHERE market = ? AND code = ?', [market, code])
       if (exist) {
@@ -544,13 +566,47 @@ export const usePortfolioStore = defineStore('portfolio', {
       this.syncKlines()
     },
 
+    // 初始建仓自动生成的那笔入金（用于编辑日期/删除时联动，避免买入与入金日期错位）
+    // 优先按“同日+同券商+金额一致”精确匹配；老数据 origin 为空时靠备注前缀兜底
+    _initialDeposit(t, fallbackDate = false) {
+      if (!t) return null
+      const cost = Math.round(
+        ((Number(t.price) || 0) * (Number(t.shares) || 0) + (Number(t.fee) || 0) + (Number(t.tax) || 0)) * 100
+      ) / 100
+      const base = "SELECT * FROM cash_flows WHERE type = 'deposit' AND broker = ? AND ABS(amount - ?) <= 0.011"
+      let cf = get(base + " AND date = ? AND (origin = 'initial' OR note LIKE '初始建仓-自动入金（%') ORDER BY id LIMIT 1", [
+        t.broker,
+        cost,
+        t.date
+      ])
+      // 日期错位（如买入已改期而入金仍在原日期）时的兜底：同券商同金额且备注吻合的自动入金
+      if (!cf && fallbackDate) {
+        cf = get(
+          base +
+            " AND note LIKE '初始建仓-自动入金（%' AND (origin = 'initial' OR origin = '' OR origin IS NULL) ORDER BY date DESC, id DESC LIMIT 1",
+          [t.broker, cost]
+        )
+      }
+      return cf
+    },
+
     // 编辑交易记录
     async updateTrade(id, t) {
       const broker = t.broker || this.defaultBroker
+      // 初始建仓（补录历史持仓）标记随交易保留：只要仍属买入/配股类建仓就保持 origin
+      const oldT = get('SELECT * FROM trades WHERE id = ?', [id])
+      const keepInitial = !!(oldT && oldT.origin === 'initial' && (t.type === 'buy' || t.type === 'rights'))
       run(
-        'UPDATE trades SET date=?, market=?, code=?, name=?, type=?, shares=?, price=?, fee=?, tax=?, amount=?, note=?, broker=? WHERE id=?',
-        [t.date, t.market, t.code, t.name || '', t.type, t.shares || 0, t.price || 0, t.fee || 0, t.tax || 0, t.amount || 0, t.note || '', broker, id]
+        'UPDATE trades SET date=?, market=?, code=?, name=?, type=?, shares=?, price=?, fee=?, tax=?, amount=?, note=?, broker=?, origin=? WHERE id=?',
+        [t.date, t.market, t.code, t.name || '', t.type, t.shares || 0, t.price || 0, t.fee || 0, t.tax || 0, t.amount || 0, t.note || '', broker, keepInitial ? 'initial' : '', id]
       )
+      // 初始建仓对应的自动入金：日期/券商随买入联动，避免“买入某日、入金另一日”的净资产虚增台阶
+      if (keepInitial && oldT) {
+        const cf = this._initialDeposit({ ...oldT, date: oldT.date }, false)
+        if (cf) {
+          run('UPDATE cash_flows SET date = ?, broker = ?, origin = ? WHERE id = ?', [t.date, broker, 'initial', cf.id])
+        }
+      }
       if (t.name) run('UPDATE stocks SET name = ? WHERE market = ? AND code = ?', [t.name, t.market, t.code])
       if (broker) run('UPDATE stocks SET broker = ? WHERE market = ? AND code = ?', [broker, t.market, t.code])
       if (Array.isArray(t.tag) && t.tag.length) {
@@ -563,6 +619,12 @@ export const usePortfolioStore = defineStore('portfolio', {
     },
 
     async deleteTrade(id) {
+      // 初始建仓的自动入金与买入成对生成：删除买入时联动删除对应入金，避免现金端残留虚增
+      const del = get('SELECT * FROM trades WHERE id = ?', [id])
+      if (del && del.origin === 'initial' && (del.type === 'buy' || del.type === 'rights')) {
+        const cf = this._initialDeposit(del, true)
+        if (cf) run('DELETE FROM cash_flows WHERE id = ?', [cf.id])
+      }
       run('DELETE FROM trades WHERE id = ?', [id])
       await this.loadData()
       markDirty()
