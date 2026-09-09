@@ -2,7 +2,7 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import dayjs from 'dayjs'
-import { ArrowLeft } from '@element-plus/icons-vue'
+import { ArrowLeft, TrendCharts, Wallet } from '@element-plus/icons-vue'
 import { usePortfolioStore } from '../stores/portfolio'
 import { fmtMoney, fmtNum, fmtPct, pnlClass } from '../utils/format'
 
@@ -146,6 +146,21 @@ function dayRows(list) {
 function netFlow(flows) {
   return (flows || []).reduce((a, f) => a + (f.type === 'deposit' ? f.amount : -f.amount), 0)
 }
+
+// 日视图：区间内「投资收益」与「资金进出」拆分
+const dayBreakdown = computed(() => {
+  const data = dayData.value
+  if (!data.length) return { invest: 0, flow: 0, investPct: 0, flowPct: 0 }
+  const cash = dayRows(data).reduce((sum, r) => sum + netFlow(r.flows), 0)
+  const invest = periodChange.value.value - cash
+  const denom = Math.abs(invest) + Math.abs(cash)
+  return {
+    invest,
+    flow: cash,
+    investPct: denom ? (Math.abs(invest) / denom) * 100 : 0,
+    flowPct: denom ? (Math.abs(cash) / denom) * 100 : 0
+  }
+})
 
 // 批量把资金事件并入 month/year 的统计
 function aggFlows(target, p) {
@@ -448,7 +463,7 @@ onBeforeUnmount(() => {
             <div class="nw-label">
               {{ mode === 'day' ? '所选区间变化（' + currentRangeLabel + '）' : '净资产' }}
             </div>
-            <div v-if="mode === 'day'" class="nw-value" :class="['num', pnlClass(periodChange.value)]">
+            <div v-if="mode === 'day'" class="nw-value nw-range-value" :class="['num', pnlClass(periodChange.value)]">
               {{ periodChange.value > 0 ? '+' : '' }}{{ fmtMoney(periodChange.value, 0) }}
               <span class="nw-pct">({{ periodChange.value > 0 ? '+' : '' }}{{ fmtPct(periodChange.pct) }})</span>
             </div>
@@ -487,6 +502,29 @@ onBeforeUnmount(() => {
         </div>
 
         <div ref="chartRef" class="nw-chart"></div>
+
+        <div v-if="mode === 'day'" class="nw-breakdown">
+          <div class="nw-bd-row">
+            <div class="nw-bd-icon" :class="pnlClass(dayBreakdown.invest)">
+              <el-icon :size="18"><TrendCharts /></el-icon>
+            </div>
+            <div class="nw-bd-label">投资收益</div>
+            <div class="nw-bd-right">
+              <div class="nw-bd-num" :class="pnlClass(dayBreakdown.invest)">{{ (dayBreakdown.invest > 0 ? '+' : '') + fmtMoney(dayBreakdown.invest, 0) }}</div>
+              <div class="nw-bd-pct">占比 {{ fmtPct(dayBreakdown.investPct) }}</div>
+            </div>
+          </div>
+          <div class="nw-bd-row nw-capital">
+            <div class="nw-bd-icon">
+              <el-icon :size="18"><Wallet /></el-icon>
+            </div>
+            <div class="nw-bd-label">资金进出</div>
+            <div class="nw-bd-right">
+              <div class="nw-bd-num" :class="pnlClass(dayBreakdown.flow)">{{ (dayBreakdown.flow > 0 ? '+' : '') + fmtMoney(dayBreakdown.flow, 0) }}</div>
+              <div class="nw-bd-pct">占比 {{ fmtPct(dayBreakdown.flowPct) }}</div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </teleport>
@@ -562,6 +600,9 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.nw-value.nw-range-value {
+  font-size: 22px;
+}
 .nw-pct {
   font-size: 13px;
   font-weight: 700;
@@ -587,6 +628,67 @@ onBeforeUnmount(() => {
   color: #dc2626;
   font-weight: 600;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+}
+.nw-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 16px 14px;
+  border-top: 1px solid #f1f5f9;
+  flex-shrink: 0;
+}
+.nw-bd-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #f8fafc;
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.nw-bd-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: #e2e8f0;
+  color: #64748b;
+}
+.nw-bd-icon.up {
+  background: #fee2e2;
+  color: #dc2626;
+}
+.nw-bd-icon.down {
+  background: #d1fae5;
+  color: #10b981;
+}
+.nw-capital .nw-bd-icon {
+  background: #fef3c7;
+  color: #d97706;
+}
+.nw-bd-label {
+  flex: 1;
+  font-size: 14px;
+  color: #334155;
+}
+.nw-bd-right {
+  text-align: right;
+}
+.nw-bd-num {
+  font-size: 16px;
+  font-weight: 700;
+}
+.nw-bd-num.up {
+  color: #dc2626;
+}
+.nw-bd-num.down {
+  color: #10b981;
+}
+.nw-bd-pct {
+  font-size: 11px;
+  color: #94a3b8;
 }
 .range-bar {
   display: flex;

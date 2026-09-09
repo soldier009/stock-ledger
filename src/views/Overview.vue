@@ -809,6 +809,13 @@ onBeforeUnmount(() => {
 
 <style>
 /* 底部抽屉：当日持仓盈亏明细（drawer 挂载到 body，需全局样式） */
+/* 整体 UI 是 max-width:520px 的手机列；抽屉也要收在同一列宽内居中，避免宽屏下铺满整个浏览器 */
+.el-drawer.dd-drawer {
+  width: min(100%, 520px) !important;
+  left: 0 !important;
+  right: 0 !important;
+  margin: 0 auto;
+}
 .dd-drawer .el-drawer__body {
   padding: 16px 18px 22px;
   overflow: hidden;
