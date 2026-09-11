@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import dayjs from 'dayjs'
 import { usePortfolioStore } from '../stores/portfolio'
@@ -26,6 +26,75 @@ const APP_VERSION = __APP_VERSION__
 
 function escHtml(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+// ===== 列表右侧状态文案 =====
+// 统一用相对时间（"2 分钟前"），避免完整时间戳把一行撑开
+function relTime(ts) {
+  if (!ts) return '从未'
+  const diff = Date.now() - new Date(ts).getTime()
+  if (diff < 0) return dayjs(ts).format('MM-DD HH:mm')
+  const min = Math.floor(diff / 60000)
+  if (min < 1) return '刚刚'
+  if (min < 60) return `${min} 分钟前`
+  const hour = Math.floor(min / 60)
+  if (hour < 24) return `${hour} 小时前`
+  const day = Math.floor(hour / 24)
+  if (day < 30) return `${day} 天前`
+  return dayjs(ts).format('YYYY-MM-DD')
+}
+
+const syncValueText = computed(() => {
+  if (settings.syncing) return '同步中...'
+  if (!settings.isGithubReady) return '未配置'
+  if (settings.syncConflict) return '待选择方向'
+  return settings.lastSyncAt ? relTime(settings.lastSyncAt) : '从未同步'
+})
+
+const backupValueText = computed(() => {
+  if (backingUp.value) return '备份中...'
+  if (!settings.isGithubReady) return '未配置'
+  if (settings.backupState === 'error') return '上次失败'
+  if (!settings.lastBackupAt) return settings.github.autoBackup ? '自动备份已开' : '从未备份'
+  return relTime(settings.lastBackupAt)
+})
+
+const rateValueText = computed(() => (settings.rates.auto ? '自动获取' : `USD ${settings.rates.usd}`))
+
+// ===== 底部抽屉 =====
+const sheet = ref('')
+const sheetVisible = ref(false)
+const SHEET_TITLES = {
+  sync: '同步配置',
+  snapshots: '同步自动留底',
+  refresh: '行情刷新',
+  rates: '汇率设置',
+  brokers: '券商管理',
+  tags: '标签管理',
+  docs: '数据说明'
+}
+const sheetTitle = computed(() => SHEET_TITLES[sheet.value] || '')
+// 表单类抽屉给足高度，纯说明/选项类收紧一些
+const sheetSize = computed(() =>
+  ['sync', 'brokers', 'tags'].includes(sheet.value) ? 'min(640px, 84vh)' : 'min(640px, 62vh)'
+)
+
+function openSheet(name) {
+  sheet.value = name
+  sheetVisible.value = true
+  if (name === 'snapshots') refreshSnapshots()
+}
+
+function setRefresh(minutes) {
+  settings.saveRefreshMinutes(minutes)
+}
+
+function showVersion() {
+  ElMessageBox.alert(
+    `股票记账本 v${APP_VERSION}。数据保存在本机浏览器（IndexedDB），通过 GitHub 私有仓库多端自动同步。`,
+    '版本信息',
+    { confirmButtonText: '知道了' }
+  )
 }
 
 async function test() {
@@ -143,8 +212,6 @@ function saveBytesAsFile(name, bytes) {
 
 // ===== 同步留底：覆盖前自动保存的版本，可下载或恢复到本地 =====
 const snapshotRows = ref([])
-// 折叠面板默认收起，只有用户手动点击才展开（不随留底记录自动打开）
-const snapshotOpen = ref([])
 
 async function refreshSnapshots() {
   try {
@@ -181,7 +248,7 @@ async function downloadSnapshot(row) {
 async function restoreSnapshot(row) {
   try {
     await ElMessageBox.confirm(
-      `确定把当前本地数据恢复到 ${dayjs(row.ts).format('YYYY-MM-DD HH:mm')} 这份留底吗？\n\n当前本地数据会被这份留底替换（不会改动云端）。恢复后请到上方执行一次「立即同步」并选择方向，避免与云端再次冲突。`,
+      `确定把当前本地数据恢复到 ${dayjs(row.ts).format('YYYY-MM-DD HH:mm')} 这份留底吗？\n\n当前本地数据会被这份留底替换（不会改动云端）。恢复后请到「账户同步 → 立即同步」选择一次方向，避免与云端再次冲突。`,
       '恢复留底',
       { type: 'warning', confirmButtonText: '恢复', cancelButtonText: '取消' }
     )
@@ -238,7 +305,6 @@ function saveRates() {
 }
 
 // ===== 券商管理 =====
-const activeTab = ref('sync')
 const newBroker = ref('')
 const editingBroker = ref('')
 const brokerRename = ref('')
@@ -334,143 +400,233 @@ function commitRename(oldTag) {
       <div class="page-title">设置</div>
     </div>
 
-    <el-tabs v-model="activeTab" tab-position="left" class="settings-tabs">
-      <!-- 账户同步 -->
-      <el-tab-pane label="账户同步" name="sync">
-        <div class="card">
-          <div class="muted" style="margin-bottom: 10px">
-            在<b>每台设备</b>上填入<b>相同的仓库地址与令牌</b>，打开应用会自动同步最新数据，多端共同使用、数据共享。
-          </div>
-          <div class="muted" style="margin-bottom: 10px">
-            同步按整份账本的新旧整体替换；若<b>本机与云端在达成一致后各自都有新改动</b>，会暂停并请您选择方向（不会静默覆盖）。任何覆盖发生前都会自动留底，可在「数据管理 → 同步自动留底」找回。
-          </div>
-          <el-form label-position="top" size="default">
-            <el-form-item label="仓库地址（owner/仓库名）">
-              <el-input v-model="settings.github.repo" placeholder="如 myname/stock-ledger-backup" @change="settings.saveGithub()" />
-            </el-form-item>
-            <el-form-item label="访问令牌 (PAT)">
-              <el-input v-model="settings.github.token" type="password" show-password placeholder="ghp_..." @change="settings.saveGithub()" />
-            </el-form-item>
-            <el-form-item label="备份路径">
-              <el-input v-model="settings.github.path" placeholder="backup/stock-ledger.db" @change="settings.saveGithub()" />
-            </el-form-item>
-            <div class="row between">
-              <span class="muted">自动备份（变更后延迟保存）</span>
+    <div v-if="settings.syncConflict" class="warn-tip">
+      ⚠ 本地与云端在上次同步后各自都有新改动，为避免误覆盖已暂停自动同步。点下方「立即同步」选择方向。
+    </div>
+
+    <!-- ===== 账户同步 ===== -->
+    <div class="group-title">账户同步</div>
+    <div class="group">
+      <div class="srow" @click="openSheet('sync')">
+        <el-icon class="ico"><Operation /></el-icon>
+        <span class="row-title">同步配置</span>
+        <span class="row-value" :class="{ ok: settings.isGithubReady }">{{ settings.isGithubReady ? '已连接' : '未配置' }}</span>
+        <el-icon class="chev"><ArrowRight /></el-icon>
+      </div>
+      <div class="srow" @click="syncNow">
+        <el-icon class="ico"><Refresh /></el-icon>
+        <span class="row-title">立即同步</span>
+        <span class="row-value" :class="{ warn: settings.syncConflict }">{{ syncValueText }}</span>
+        <el-icon v-if="restoring || settings.syncing" class="chev spin"><Loading /></el-icon>
+      </div>
+      <div class="srow" @click="backup">
+        <el-icon class="ico"><Cloudy /></el-icon>
+        <span class="row-title">立即备份</span>
+        <span class="row-value">{{ backupValueText }}</span>
+        <el-icon v-if="backingUp" class="chev spin"><Loading /></el-icon>
+      </div>
+      <div class="srow" @click="openSheet('snapshots')">
+        <el-icon class="ico"><Timer /></el-icon>
+        <span class="row-title">同步自动留底</span>
+        <span class="row-value">{{ snapshotRows.length }} 条</span>
+        <el-icon class="chev"><ArrowRight /></el-icon>
+      </div>
+    </div>
+    <div class="group-note">
+      在每台设备填入相同的仓库地址与令牌，打开应用会自动同步，多端共享同一份账本。任何覆盖发生前都会自动留底，可随时找回。
+    </div>
+
+    <!-- ===== 数据管理 ===== -->
+    <div class="group-title">数据管理</div>
+    <div class="group">
+      <div class="srow" @click="doExportExcel">
+        <el-icon class="ico"><Tickets /></el-icon>
+        <span class="row-title">导出 Excel</span>
+      </div>
+      <div class="srow" @click="doExportPdf">
+        <el-icon class="ico"><Document /></el-icon>
+        <span class="row-title">导出 PDF</span>
+      </div>
+      <div class="srow" @click="downloadLocalBackup">
+        <el-icon class="ico"><Download /></el-icon>
+        <span class="row-title">下载本地备份</span>
+      </div>
+      <div class="srow" @click="fileInput.click()">
+        <el-icon class="ico"><Upload /></el-icon>
+        <span class="row-title">从备份恢复</span>
+      </div>
+      <input ref="fileInput" type="file" accept=".db,.sqlite,.sqlite3" style="display: none" @change="onImportFile" />
+    </div>
+    <div class="group-note">
+      报表包含总览、持仓、交易流水、月度/年度盈亏与年度个股明细；备份文件为 SQLite 数据库（.db），可用于本地存档或手动迁移。
+    </div>
+
+    <div class="group" style="margin-top: 12px">
+      <div class="srow danger" @click="clearAll">
+        <span class="row-title">清空所有数据</span>
+      </div>
+    </div>
+
+    <!-- ===== 显示设置 ===== -->
+    <div class="group-title">显示设置</div>
+    <div class="group">
+      <div class="srow" @click="openSheet('refresh')">
+        <el-icon class="ico"><Clock /></el-icon>
+        <span class="row-title">行情刷新</span>
+        <span class="row-value">每 {{ settings.refreshMinutes }} 分钟</span>
+        <el-icon class="chev"><ArrowRight /></el-icon>
+      </div>
+      <div class="srow" @click="openSheet('rates')">
+        <el-icon class="ico"><Coin /></el-icon>
+        <span class="row-title">汇率设置</span>
+        <span class="row-value">{{ rateValueText }}</span>
+        <el-icon class="chev"><ArrowRight /></el-icon>
+      </div>
+      <div class="srow" @click="openSheet('brokers')">
+        <el-icon class="ico"><OfficeBuilding /></el-icon>
+        <span class="row-title">券商管理</span>
+        <span class="row-value">{{ portfolio.brokers.length }} 个账户</span>
+        <el-icon class="chev"><ArrowRight /></el-icon>
+      </div>
+      <div class="srow" @click="openSheet('tags')">
+        <el-icon class="ico"><PriceTag /></el-icon>
+        <span class="row-title">标签管理</span>
+        <span class="row-value">{{ settings.tags.length }} 个标签</span>
+        <el-icon class="chev"><ArrowRight /></el-icon>
+      </div>
+    </div>
+
+    <!-- ===== 关于 ===== -->
+    <div class="group-title">关于</div>
+    <div class="group" style="margin-bottom: 8px">
+      <div class="srow" @click="showVersion">
+        <el-icon class="ico"><InfoFilled /></el-icon>
+        <span class="row-title">版本信息</span>
+        <span class="row-value">v{{ APP_VERSION }}</span>
+        <el-icon class="chev"><ArrowRight /></el-icon>
+      </div>
+      <div class="srow" @click="openSheet('docs')">
+        <el-icon class="ico"><Reading /></el-icon>
+        <span class="row-title">数据说明</span>
+        <el-icon class="chev"><ArrowRight /></el-icon>
+      </div>
+      <router-link to="/privacy" class="srow">
+        <el-icon class="ico"><Lock /></el-icon>
+        <span class="row-title">隐私政策</span>
+        <el-icon class="chev"><ArrowRight /></el-icon>
+      </router-link>
+    </div>
+
+    <!-- ===== 底部抽屉：承载复杂表单与列表 ===== -->
+    <el-drawer v-model="sheetVisible" direction="btt" :size="sheetSize" :with-header="false" class="st-drawer">
+      <div class="st-sheet">
+        <div class="st-handle"></div>
+        <div class="st-head">
+          <span class="st-title">{{ sheetTitle }}</span>
+          <span class="st-close" @click="sheetVisible = false"><el-icon><Close /></el-icon></span>
+        </div>
+        <div class="st-body">
+          <!-- 同步配置 -->
+          <template v-if="sheet === 'sync'">
+            <div class="st-note">
+              在<b>每台设备</b>上填入<b>相同的仓库地址与令牌</b>，打开应用会自动同步最新数据。同步按整份账本的新旧整体替换；若本机与云端在达成一致后各自都有新改动，会暂停并请您选择方向（不会静默覆盖）。
+            </div>
+            <el-form label-position="top" size="default" class="st-form">
+              <el-form-item label="仓库地址（owner/仓库名）">
+                <el-input v-model="settings.github.repo" placeholder="如 myname/stock-ledger-backup" @change="settings.saveGithub()" />
+              </el-form-item>
+              <el-form-item label="访问令牌 (PAT)">
+                <el-input v-model="settings.github.token" type="password" show-password placeholder="ghp_..." @change="settings.saveGithub()" />
+              </el-form-item>
+              <el-form-item label="备份路径">
+                <el-input v-model="settings.github.path" placeholder="backup/stock-ledger.db" @change="settings.saveGithub()" />
+              </el-form-item>
+            </el-form>
+            <div class="srow switch-row">
+              <span class="row-title">自动备份（变更后延迟保存）</span>
               <el-switch v-model="settings.github.autoBackup" @change="settings.saveGithub()" />
             </div>
-          </el-form>
 
-          <div class="row gap8" style="margin-top: 14px">
-            <el-button :loading="testing" @click="test">测试连接</el-button>
-            <el-button type="primary" :loading="restoring" @click="syncNow">立即同步</el-button>
-            <el-button :loading="backingUp" @click="backup">立即备份</el-button>
-          </div>
+            <div class="st-btns">
+              <el-button :loading="testing" @click="test">测试连接</el-button>
+              <el-button type="primary" :loading="restoring" @click="syncNow">立即同步</el-button>
+              <el-button :loading="backingUp" @click="backup">立即备份</el-button>
+            </div>
 
-          <div class="muted" style="margin-top: 10px">
-            上次备份：
-            <span v-if="settings.lastBackupAt">{{ dayjs(settings.lastBackupAt).format('YYYY-MM-DD HH:mm') }}</span>
-            <span v-else>从未</span>
-            · 备份状态：<span :class="backupStateMap[settings.backupState]?.cls || 'muted'">{{ backupStateMap[settings.backupState]?.text }}</span>
-          </div>
-          <div class="muted" style="margin-top: 6px">
-            上次同步：
-            <span v-if="settings.lastSyncAt">{{ dayjs(settings.lastSyncAt).format('YYYY-MM-DD HH:mm') }}</span>
-            <span v-else>从未</span>
-            <template v-if="settings.syncing"> · 同步中...</template>
-          </div>
-          <div v-if="settings.syncConflict" class="sync-conflict-tip">
-            ⚠ 待处理：本地与云端在上次同步后各自都有新改动，为避免误覆盖已暂停自动同步。请点击上方「立即同步」选择覆盖方向。
-          </div>
-          <div v-if="settings.backupError" class="muted up" style="margin-top: 6px">备份错误：{{ settings.backupError }}</div>
-          <div v-if="settings.syncError" class="muted up" style="margin-top: 6px">同步错误：{{ settings.syncError }}</div>
-
-          <el-collapse style="margin-top: 12px; border: none">
-            <el-collapse-item title="如何创建 PAT 令牌？">
-              <ol class="guide">
-                <li>打开 <b>github.com → Settings → Developer settings → Personal access tokens → Tokens (classic)</b></li>
-                <li>点击 <b>Generate new token (classic)</b>，勾选 <b>repo</b> 权限</li>
-                <li>生成后复制形如 <code>ghp_xxxx</code> 的令牌（只显示一次）</li>
-                <li>在 GitHub 上先创建一个 <b>私有仓库（Private）</b>，如 stock-ledger-backup</li>
-                <li>回到本页填入仓库地址与令牌，点击「测试连接」</li>
-              </ol>
-              <div class="muted">令牌仅保存在本机浏览器数据库中，不会上传到任何第三方。</div>
-            </el-collapse-item>
-          </el-collapse>
-          <div class="muted" style="margin-top: 8px; font-size: 12px;">版本：v{{ APP_VERSION }}</div>
-        </div>
-      </el-tab-pane>
-
-      <!-- 数据管理 -->
-      <el-tab-pane label="数据管理" name="data">
-        <div class="card">
-          <div class="section-title" style="padding-left: 0;">报表导出</div>
-          <div class="row gap8">
-            <el-button type="primary" plain style="flex: 1" @click="doExportExcel">导出 Excel</el-button>
-            <el-button type="primary" plain style="flex: 1" @click="doExportPdf">导出 PDF</el-button>
-          </div>
-          <div class="muted" style="margin-top: 8px">包含：总览、持仓、交易流水、月度/年度盈亏、年度个股明细</div>
-        </div>
-
-        <div class="card" style="margin-top: 16px;">
-          <div class="section-title" style="padding-left: 0;">备份与导入</div>
-          <div class="row gap8">
-            <el-button plain style="flex: 1" @click="downloadLocalBackup">下载本地备份</el-button>
-            <el-button plain style="flex: 1" @click="fileInput.click()">导入备份文件</el-button>
-          </div>
-          <input ref="fileInput" type="file" accept=".db,.sqlite,.sqlite3" style="display: none" @change="onImportFile" />
-          <div class="muted" style="margin-top: 8px">备份文件为 SQLite 数据库（.db），可用于本地存档或手动迁移。</div>
-
-          <el-collapse v-model="snapshotOpen" style="margin-top: 12px; border: none">
-            <el-collapse-item name="snap" title="同步自动留底（覆盖前自动保存，可下载/恢复）">
-              <div class="muted" style="margin-bottom: 8px">
-                每次同步覆盖发生前（无论以云端覆盖本地、还是以本地覆盖云端），系统都会自动留一份底：本地留底保存在本机，云端留底存放在仓库的 backup/history/ 目录。每类自动保留最近 12 份。「恢复」会替换当前本地数据，之后请做一次同步确认方向。
+            <div class="st-status">
+              <div>
+                上次备份：
+                <span v-if="settings.lastBackupAt">{{ dayjs(settings.lastBackupAt).format('YYYY-MM-DD HH:mm') }}</span>
+                <span v-else>从未</span>
+                · 状态：<span :class="backupStateMap[settings.backupState]?.cls || 'muted'">{{ backupStateMap[settings.backupState]?.text }}</span>
               </div>
-              <template v-if="snapshotRows.length">
-                <div v-for="r in snapshotRows" :key="r.kind + '-' + r.ts" class="tag-row">
-                  <div style="flex: 1; min-width: 0">
-                    <div class="row gap8">
-                      <span class="tag-name">{{ r.kind === 'local' ? '本地留底' : '云端留底' }}</span>
-                      <span class="muted" style="font-size: 12px">{{ dayjs(r.ts).format('YYYY-MM-DD HH:mm') }}</span>
-                    </div>
-                    <div v-if="r.note" class="muted" style="font-size: 12px">{{ r.note }}</div>
+              <div>
+                上次同步：
+                <span v-if="settings.lastSyncAt">{{ dayjs(settings.lastSyncAt).format('YYYY-MM-DD HH:mm') }}</span>
+                <span v-else>从未</span>
+                <template v-if="settings.syncing"> · 同步中...</template>
+              </div>
+              <div v-if="settings.syncConflict" class="warn-text">待处理：本地与云端在上次同步后各自都有新改动，请点上方「立即同步」选择覆盖方向。</div>
+              <div v-if="settings.backupError" class="up">备份错误：{{ settings.backupError }}</div>
+              <div v-if="settings.syncError" class="up">同步错误：{{ settings.syncError }}</div>
+            </div>
+
+            <el-collapse class="st-guide">
+              <el-collapse-item title="如何创建 PAT 令牌？">
+                <ol class="guide">
+                  <li>打开 <b>github.com → Settings → Developer settings → Personal access tokens → Tokens (classic)</b></li>
+                  <li>点击 <b>Generate new token (classic)</b>，勾选 <b>repo</b> 权限</li>
+                  <li>生成后复制形如 <code>ghp_xxxx</code> 的令牌（只显示一次）</li>
+                  <li>在 GitHub 上先创建一个 <b>私有仓库（Private）</b>，如 stock-ledger-backup</li>
+                  <li>回到本页填入仓库地址与令牌，点击「测试连接」</li>
+                </ol>
+                <div class="muted">令牌仅保存在本机浏览器数据库中，不会上传到任何第三方。</div>
+              </el-collapse-item>
+            </el-collapse>
+          </template>
+
+          <!-- 同步自动留底 -->
+          <template v-else-if="sheet === 'snapshots'">
+            <div class="st-note">
+              每次同步覆盖发生前（无论以云端覆盖本地、还是以本地覆盖云端），系统都会自动留一份底：本地留底保存在本机，云端留底存放在仓库的 backup/history/ 目录。每类自动保留最近 12 份。「恢复」会替换当前本地数据，之后请做一次同步确认方向。
+            </div>
+            <template v-if="snapshotRows.length">
+              <div v-for="r in snapshotRows" :key="r.kind + '-' + r.ts" class="tag-row">
+                <div style="flex: 1; min-width: 0">
+                  <div class="row gap8">
+                    <span class="tag-name">{{ r.kind === 'local' ? '本地留底' : '云端留底' }}</span>
+                    <span class="muted" style="font-size: 12px">{{ dayjs(r.ts).format('YYYY-MM-DD HH:mm') }}</span>
                   </div>
-                  <div class="row gap4">
-                    <el-button size="small" text type="primary" @click="downloadSnapshot(r)">下载</el-button>
-                    <el-button size="small" text @click="restoreSnapshot(r)">恢复</el-button>
-                  </div>
+                  <div v-if="r.note" class="muted" style="font-size: 12px">{{ r.note }}</div>
                 </div>
-              </template>
-              <div v-else class="muted">暂无留底记录（发生覆盖行为后才会自动生成）</div>
-            </el-collapse-item>
-          </el-collapse>
+                <div class="row gap4">
+                  <el-button size="small" text type="primary" @click="downloadSnapshot(r)">下载</el-button>
+                  <el-button size="small" text @click="restoreSnapshot(r)">恢复</el-button>
+                </div>
+              </div>
+            </template>
+            <div v-else class="muted" style="margin-top: 12px">暂无留底记录（发生覆盖行为后才会自动生成）</div>
+          </template>
 
-          <el-button type="danger" plain style="width: 100%; margin-top: 12px" @click="clearAll">清空所有数据</el-button>
-        </div>
-      </el-tab-pane>
+          <!-- 行情刷新 -->
+          <template v-else-if="sheet === 'refresh'">
+            <div class="st-note">行情（价格、涨跌幅）按此间隔在应用前台自动刷新；切回应用到前台时也会立即刷新一次。</div>
+            <div class="st-opts">
+              <div v-for="m in [5, 10, 15, 30]" :key="m" class="st-opt" @click="setRefresh(m)">
+                <span>每 {{ m }} 分钟</span>
+                <el-icon v-if="settings.refreshMinutes === m" class="st-check"><Check /></el-icon>
+              </div>
+            </div>
+          </template>
 
-      <!-- 显示设置 -->
-      <el-tab-pane label="显示设置" name="display">
-        <div class="card">
-          <div class="section-title" style="padding-left: 0;">行情刷新</div>
-          <div class="row between" style="margin-bottom: 12px">
-            <span>自动刷新间隔</span>
-            <el-select v-model="settings.refreshMinutes" style="width: 120px" @change="settings.saveRefreshMinutes(settings.refreshMinutes)">
-              <el-option :value="5" label="每 5 分钟" />
-              <el-option :value="10" label="每 10 分钟" />
-              <el-option :value="15" label="每 15 分钟" />
-              <el-option :value="30" label="每 30 分钟" />
-            </el-select>
-          </div>
-        </div>
-
-        <div class="card" style="margin-top: 16px;">
-          <div class="section-title" style="padding-left: 0;">汇率设置</div>
-          <div class="row between" style="margin-bottom: 12px">
-            <span>自动获取汇率</span>
-            <el-switch v-model="settings.rates.auto" @change="saveRates" />
-          </div>
-          <template v-if="!settings.rates.auto">
-            <div class="row gap8">
+          <!-- 汇率设置 -->
+          <template v-else-if="sheet === 'rates'">
+            <div class="st-note">港股与美股持仓需要按汇率折算成人民币。开启自动获取后，汇率从公开行情接口读取。</div>
+            <div class="srow switch-row">
+              <span class="row-title">自动获取汇率</span>
+              <el-switch v-model="settings.rates.auto" @change="saveRates" />
+            </div>
+            <div v-if="!settings.rates.auto" class="row gap8" style="margin-top: 12px">
               <div class="flex1">
                 <div class="muted" style="margin-bottom: 4px">USD/CNY</div>
                 <el-input-number v-model="settings.rates.usd" :precision="4" :step="0.01" :controls="false" style="width: 100%" @change="saveRates" />
@@ -480,146 +636,293 @@ function commitRename(oldTag) {
                 <el-input-number v-model="settings.rates.hkd" :precision="4" :step="0.01" :controls="false" style="width: 100%" @change="saveRates" />
               </div>
             </div>
+            <div class="muted" style="margin-top: 12px">当前汇率：USD/CNY {{ settings.rates.usd }} · HKD/CNY {{ settings.rates.hkd }}</div>
           </template>
-          <div class="muted" style="margin-top: 8px">
-            当前汇率：USD/CNY {{ settings.rates.usd }} · HKD/CNY {{ settings.rates.hkd }}
-          </div>
-        </div>
 
-        <div class="card" style="margin-top: 16px;">
-          <div class="section-title" style="padding-left: 0;">券商管理</div>
-          <div class="muted" style="margin-bottom: 10px">
-            建立多个券商账户分别记账。股票的买卖、分红与资金出入只在该股票所属券商账户内流动。
-          </div>
-          <div class="row gap8" style="margin-bottom: 12px">
-            <el-input v-model="newBroker" placeholder="券商名称，如：华泰证券" @keyup.enter="addBroker" />
-            <el-button type="primary" @click="addBroker">添加</el-button>
-          </div>
-          <div v-for="b in portfolio.brokers" :key="b" class="tag-row">
-            <template v-if="editingBroker === b">
-              <el-input v-model="brokerRename" size="small" style="flex: 1" @keyup.enter="commitRenameBroker(b)" />
-              <el-button size="small" type="primary" @click="commitRenameBroker(b)">保存</el-button>
-              <el-button size="small" @click="editingBroker = ''">取消</el-button>
-            </template>
-            <template v-else>
-              <div class="row gap8">
-                <span class="tag-name">{{ b }}</span>
-                <span v-if="b === portfolio.defaultBroker" class="muted" style="font-size: 12px">（默认）</span>
-              </div>
-              <div class="row gap4">
-                <el-button v-if="b !== portfolio.defaultBroker" size="small" text type="primary" @click="setDefaultBroker(b)">设为默认</el-button>
-                <el-button size="small" text @click="startRenameBroker(b)">重命名</el-button>
-                <el-button size="small" text type="danger" @click="removeBroker(b)">删除</el-button>
-              </div>
-            </template>
-          </div>
-        </div>
-
-        <div class="card" style="margin-top: 16px;">
-          <div class="section-title" style="padding-left: 0;">标签管理</div>
-          <div class="muted" style="margin-bottom: 10px">
-            用于给持仓分类，同一标签的股票在资产页归为一组，可在「记一笔」时直接新建。
-          </div>
-          <div class="row gap8" style="margin-bottom: 12px">
-            <el-input v-model="newTag" placeholder="输入新标签，如：长期持有" @keyup.enter="addTag" />
-            <el-button type="primary" @click="addTag">添加</el-button>
-          </div>
-          <template v-if="settings.tags.length">
-            <div v-for="tg in settings.tags" :key="tg" class="tag-row">
-              <template v-if="editingTag === tg">
-                <el-input v-model="renameInput" size="small" style="flex: 1" @keyup.enter="commitRename(tg)" />
-                <el-button size="small" type="primary" @click="commitRename(tg)">保存</el-button>
-                <el-button size="small" @click="editingTag = ''">取消</el-button>
+          <!-- 券商管理 -->
+          <template v-else-if="sheet === 'brokers'">
+            <div class="st-note">建立多个券商账户分别记账。股票的买卖、分红与资金出入只在该股票所属券商账户内流动。至少保留一个账户。</div>
+            <div class="row gap8" style="margin: 12px 0">
+              <el-input v-model="newBroker" placeholder="券商名称，如：华泰证券" @keyup.enter="addBroker" />
+              <el-button type="primary" @click="addBroker">添加</el-button>
+            </div>
+            <div v-for="b in portfolio.brokers" :key="b" class="tag-row">
+              <template v-if="editingBroker === b">
+                <el-input v-model="brokerRename" size="small" style="flex: 1" @keyup.enter="commitRenameBroker(b)" />
+                <el-button size="small" type="primary" @click="commitRenameBroker(b)">保存</el-button>
+                <el-button size="small" @click="editingBroker = ''">取消</el-button>
               </template>
               <template v-else>
-                <span class="tag-name">{{ tg }}</span>
+                <div class="row gap8">
+                  <span class="tag-name">{{ b }}</span>
+                  <span v-if="b === portfolio.defaultBroker" class="muted" style="font-size: 12px">（默认）</span>
+                </div>
                 <div class="row gap4">
-                  <el-button size="small" text @click="startRename(tg)">重命名</el-button>
-                  <el-button size="small" text type="danger" @click="removeTag(tg)">删除</el-button>
+                  <el-button v-if="b !== portfolio.defaultBroker" size="small" text type="primary" @click="setDefaultBroker(b)">设为默认</el-button>
+                  <el-button size="small" text @click="startRenameBroker(b)">重命名</el-button>
+                  <el-button size="small" text type="danger" @click="removeBroker(b)">删除</el-button>
                 </div>
               </template>
             </div>
           </template>
-          <div v-else class="muted">暂无标签，点击上方添加</div>
-        </div>
-      </el-tab-pane>
 
-      <!-- 关于 -->
-      <el-tab-pane label="关于" name="about">
-        <div class="card">
-          <div class="section-title" style="padding-left: 0;">版本信息</div>
-          <div>股票记账本 v{{ APP_VERSION }}</div>
-        </div>
+          <!-- 标签管理 -->
+          <template v-else-if="sheet === 'tags'">
+            <div class="st-note">用于给持仓分类，同一标签的股票在资产页归为一组，可在「记一笔」时直接新建。</div>
+            <div class="row gap8" style="margin: 12px 0">
+              <el-input v-model="newTag" placeholder="输入新标签，如：长期持有" @keyup.enter="addTag" />
+              <el-button type="primary" @click="addTag">添加</el-button>
+            </div>
+            <template v-if="settings.tags.length">
+              <div v-for="tg in settings.tags" :key="tg" class="tag-row">
+                <template v-if="editingTag === tg">
+                  <el-input v-model="renameInput" size="small" style="flex: 1" @keyup.enter="commitRename(tg)" />
+                  <el-button size="small" type="primary" @click="commitRename(tg)">保存</el-button>
+                  <el-button size="small" @click="editingTag = ''">取消</el-button>
+                </template>
+                <template v-else>
+                  <span class="tag-name">{{ tg }}</span>
+                  <div class="row gap4">
+                    <el-button size="small" text @click="startRename(tg)">重命名</el-button>
+                    <el-button size="small" text type="danger" @click="removeTag(tg)">删除</el-button>
+                  </div>
+                </template>
+              </div>
+            </template>
+            <div v-else class="muted">暂无标签，点击上方添加</div>
+          </template>
 
-        <div class="card" style="margin-top: 16px;">
-          <div class="section-title" style="padding-left: 0;">数据说明</div>
-          <div class="muted">
-            行情来源：A股/港股（腾讯实时行情）、美股与汇率（Yahoo Finance），行情接口为免费公开接口，可能出现延迟或中断，请以实际成交为准。
-          </div>
-          <div class="muted" style="margin-top: 8px">
-            数据保存在本机浏览器（IndexedDB），通过 GitHub 私有仓库多端自动同步，手机与电脑可共同使用同一份数据。
-          </div>
+          <!-- 数据说明 -->
+          <template v-else-if="sheet === 'docs'">
+            <div class="st-note">
+              <b>行情来源</b>：A股/港股（腾讯实时行情）、美股与汇率（Yahoo Finance）。行情接口为免费公开接口，可能出现延迟或中断，请以实际成交为准。
+            </div>
+            <div class="st-note">
+              <b>数据存储</b>：数据保存在本机浏览器（IndexedDB），并通过 GitHub 私有仓库多端自动同步，手机与电脑可共同使用同一份数据。
+            </div>
+            <div class="st-note">
+              <b>报表与备份</b>：Excel / PDF 报表包含总览、持仓、交易流水、月度/年度盈亏与年度个股明细；备份为 SQLite 数据库（.db）文件，可用于本地存档或手动迁移。
+            </div>
+          </template>
         </div>
-
-        <div class="card" style="margin-top: 16px;">
-          <div class="section-title" style="padding-left: 0;">法律信息</div>
-          <div style="margin-top: 10px">
-            <router-link to="/privacy" class="privacy-link">隐私政策</router-link>
-          </div>
-        </div>
-      </el-tab-pane>
-    </el-tabs>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
 <style scoped>
-.settings-tabs {
-  margin-top: 16px;
-}
-.settings-tabs :deep(.el-tabs__header) {
-  width: 120px;
-  margin-right: 0;
-}
-.settings-tabs :deep(.el-tabs__content) {
-  padding-left: 0;
-}
-.settings-tabs :deep(.el-tabs__nav-wrap::after) {
-  display: none;
-}
-.settings-tabs :deep(.el-tabs__item) {
-  text-align: left;
-  padding: 0 16px;
-  height: 48px;
-  line-height: 48px;
-  font-size: 14px;
-}
-.settings-tabs :deep(.el-tabs__item.is-active) {
-  color: var(--primary, #0f9d78);
-  font-weight: 600;
-}
-.sync-conflict-tip {
-  margin-top: 8px;
-  padding: 8px 10px;
-  border-radius: 6px;
+/* ===== 分组列表 ===== */
+.group-title {
   font-size: 13px;
+  color: var(--text-2);
+  padding: 18px 16px 8px;
+}
+
+.group {
+  background: var(--card);
+  margin: 0 12px;
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 1px 6px rgba(15, 23, 42, 0.05);
+}
+
+.srow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 0 14px;
+  position: relative;
+  cursor: pointer;
+  text-decoration: none;
+  color: inherit;
+}
+
+.srow + .srow::before {
+  content: '';
+  position: absolute;
+  left: 48px;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: var(--border);
+}
+
+.srow:active {
+  background: rgba(15, 23, 42, 0.03);
+}
+
+.srow .ico {
+  flex: 0 0 20px;
+  font-size: 19px;
+  color: var(--primary);
+}
+
+.srow .row-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+}
+
+.srow .row-value {
+  font-size: 13px;
+  color: #9aa3af;
+  white-space: nowrap;
+}
+.srow .row-value.ok {
+  color: var(--primary);
+}
+.srow .row-value.warn {
+  color: #b45309;
+}
+
+.srow .chev {
+  flex: 0 0 15px;
+  font-size: 15px;
+  color: #cbd2da;
+}
+
+.srow.danger {
+  justify-content: center;
+}
+.srow.danger .row-title {
+  flex: 0 0 auto;
+  text-align: center;
+  color: var(--up);
+  font-weight: 500;
+}
+
+.spin {
+  animation: st-spin 1s linear infinite;
+}
+@keyframes st-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.group-note {
+  font-size: 12px;
+  color: var(--text-2);
+  padding: 8px 16px 0;
+  line-height: 1.7;
+}
+
+.warn-tip {
+  margin: 10px 12px 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 12.5px;
   line-height: 1.6;
   color: #b45309;
   background: #fef3c7;
   border: 1px solid #fde68a;
 }
-.privacy-link {
-  font-size: 13px;
-  color: var(--primary, #0f9d78);
-  text-decoration: none;
+
+/* ===== 抽屉内容 ===== */
+.st-sheet {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
 }
-.section-title {
-  font-size: 14px;
+.st-handle {
+  width: 38px;
+  height: 4px;
+  border-radius: 2px;
+  background: #e3e7ec;
+  margin: 8px auto 10px;
+  flex: 0 0 auto;
+}
+.st-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 18px 12px;
+  flex: 0 0 auto;
+}
+.st-title {
+  font-size: 16px;
   font-weight: 600;
-  color: var(--text-2);
-  padding: 4px 0 10px;
-  border-bottom: 1px solid var(--border, #f1f5f9);
-  margin-bottom: 12px;
 }
+.st-close {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #f1f3f6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #8a94a2;
+  cursor: pointer;
+}
+.st-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 18px 20px;
+}
+.st-note {
+  font-size: 12.5px;
+  color: var(--text-2);
+  line-height: 1.75;
+}
+.st-note + .st-note {
+  margin-top: 10px;
+}
+.st-form {
+  margin-top: 12px;
+}
+.switch-row {
+  min-height: 44px;
+  padding: 0;
+}
+.switch-row::before {
+  display: none;
+}
+.st-btns {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+.st-btns .el-button {
+  flex: 1;
+}
+.st-btns :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+.st-status {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.8;
+}
+.warn-text {
+  color: #b45309;
+}
+.st-guide {
+  margin-top: 8px;
+  border: none;
+}
+.st-opts {
+  margin-top: 8px;
+}
+.st-opt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 48px;
+  font-size: 14.5px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.st-opt:last-child {
+  border-bottom: none;
+}
+.st-check {
+  color: var(--primary);
+  font-size: 18px;
+}
+
 .guide {
   padding-left: 18px;
   margin: 6px 0;
@@ -635,8 +938,9 @@ function commitRename(oldTag) {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   padding: 8px 2px;
-  border-bottom: 1px solid var(--border, #f1f5f9);
+  border-bottom: 1px solid var(--border);
 }
 .tag-row:last-child {
   border-bottom: none;
@@ -646,5 +950,19 @@ function commitRename(oldTag) {
 }
 .gap4 {
   gap: 4px;
+}
+</style>
+
+<style>
+/* 底部抽屉挂载到 body：需全局样式；宽度收在 520px 手机列内居中 */
+.el-drawer.st-drawer {
+  width: min(100%, 520px) !important;
+  left: 0 !important;
+  right: 0 !important;
+  margin: 0 auto;
+}
+.st-drawer .el-drawer__body {
+  padding: 0;
+  overflow: hidden;
 }
 </style>

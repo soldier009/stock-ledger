@@ -41,7 +41,9 @@ export default defineConfig({
       }
     })
   ],
-  server: { host: true, port: 8000 },
+  // dev server 用 5173；8000 留给 `npm run preview`（预览构建产物），两者分开避免抢端口
+  server: { host: true, port: 5173 },
+  preview: { host: true, port: 8000 },
   build: {
     chunkSizeWarningLimit: 1200,
     rollupOptions: {
