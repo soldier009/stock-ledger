@@ -48,6 +48,7 @@ const totalCost = computed(() => portfolio.positions.reduce((a, p) => a + p.avgC
 
 // 持仓分布：按标签 / 按个股
 const pieMode = ref('tag')
+const assetMode = ref('total')
 const pieData = computed(() => {
   if (pieMode.value === 'tag') {
     const groups = {}
@@ -62,6 +63,59 @@ const pieData = computed(() => {
   }
   return portfolio.positions.map((p) => ({ name: p.name || p.code, value: Math.round(p.mvCny * 100) / 100 }))
 })
+
+// 资产分布数据
+const distributionSegments = computed(() => {
+  const total = portfolio.totals.mvTotal
+  if (total === 0) return []
+  
+  let segments = []
+  
+  if (assetMode.value === 'total') {
+    // 总资产分布
+    segments = [
+      { name: '股票', value: portfolio.totals.stockValue, color: '#dc2626' },
+      { name: '基金', value: portfolio.totals.fundValue, color: '#3b82f6' },
+      { name: '现金/资产', value: portfolio.totals.cash, color: '#8b5cf6' }
+    ]
+  } else if (assetMode.value === 'stock') {
+    // 股票分布
+    const stockPositions = portfolio.positions.filter(p => p.market === 'A' || p.market === 'US')
+    const totalStock = stockPositions.reduce((sum, p) => sum + p.mvCny, 0)
+    if (totalStock === 0) return []
+    
+    segments = [
+      { name: 'A股', value: stockPositions.filter(p => p.market === 'A').reduce((sum, p) => sum + p.mvCny, 0), color: '#dc2626' },
+      { name: '美股', value: stockPositions.filter(p => p.market === 'US').reduce((sum, p) => sum + p.mvCny, 0), color: '#f59e0b' }
+    ]
+  } else if (assetMode.value === 'fund') {
+    // 基金分布
+    const fundPositions = portfolio.positions.filter(p => p.market === 'FUND')
+    const totalFund = fundPositions.reduce((sum, p) => sum + p.mvCny, 0)
+    if (totalFund === 0) return []
+    
+    segments = [
+      { name: '公募基金', value: totalFund, color: '#3b82f6' }
+    ]
+  } else if (assetMode.value === 'cash') {
+    // 现金/资产分布
+    segments = [
+      { name: '现金', value: portfolio.totals.cash, color: '#8b5cf6' }
+    ]
+  }
+  
+  return segments.map(segment => ({
+    ...segment,
+    width: total > 0 ? Math.round((segment.value / total) * 100) : 0
+  }))
+})
+
+const distributionItems = computed(() => {
+  return distributionSegments.value.map(segment => ({
+    ...segment,
+    percentage: total > 0 ? Math.round((segment.value / total) * 100) : 0
+  }))
+}))
 
 // ===== 当日持仓盈亏日历 =====
 const hMode = ref('month')
@@ -347,21 +401,30 @@ onBeforeUnmount(() => {
     <!-- 资产分布 -->
     <div class="card">
       <div class="section-title" style="margin-bottom: 12px">资产分布</div>
-      <div v-if="allocation.length" class="alloc-list">
-        <div v-for="item in allocation" :key="item.market" class="alloc-item">
-          <div class="row between" style="margin-bottom: 4px">
-            <span>{{ item.label }}</span>
-            <span class="num">{{ fmtMoney(item.value, 0) }}</span>
-          </div>
-          <el-progress
-            :percentage="totalAllocation > 0 ? Math.round(item.value / totalAllocation * 100) : 0"
-            :stroke-width="8"
-            :color="item.market === 'A' ? '#dc2626' : item.market === 'HK' ? '#3b82f6' : '#f59e0b'"
-            :show-text="false"
-          />
+      
+      <div class="distribution-tabs">
+        <span :class="{ active: assetMode === 'total' }" @click="assetMode = 'total'">总资产</span>
+        <span :class="{ active: assetMode === 'stock' }" @click="assetMode = 'stock'">股票</span>
+        <span :class="{ active: assetMode === 'fund' }" @click="assetMode = 'fund'">基金</span>
+        <span :class="{ active: assetMode === 'cash' }" @click="assetMode = 'cash'">现金/资产</span>
+      </div>
+      
+      <div class="distribution-bar">
+        <div class="bar-segment" 
+             v-for="(segment, index) in distributionSegments" 
+             :key="index"
+             :style="{ backgroundColor: segment.color, width: segment.width + '%' }">
         </div>
       </div>
-      <div v-else class="muted" style="text-align: center; padding: 20px">暂无持仓数据</div>
+
+      <div class="distribution-list">
+        <div v-for="(item, index) in distributionItems" :key="index" class="distribution-item">
+          <div class="item-dot" :style="{ backgroundColor: item.color }"></div>
+          <div class="item-name">{{ item.name }}</div>
+          <div class="item-percentage">{{ item.percentage }}%</div>
+          <div class="item-amount">¥{{ fmtMoney(item.amount, 0) }}</div>
+        </div>
+      </div>
     </div>
 
     <!-- 持仓分布 -->
@@ -951,5 +1014,68 @@ onBeforeUnmount(() => {
   font-size: 12px;
   padding: 24px 0;
   text-align: center;
+}
+
+/* ===== 资产分布 ===== */
+.distribution-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.distribution-tabs span {
+  padding: 6px 12px;
+  border-radius: 16px;
+  font-size: 13px;
+  cursor: pointer;
+  background: #f1f5f9;
+  color: #64748b;
+}
+.distribution-tabs span.active {
+  background: #dc2626;
+  color: #fff;
+}
+
+.distribution-bar {
+  height: 24px;
+  border-radius: 12px;
+  background: #f1f5f9;
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+.bar-segment {
+  height: 100%;
+  float: left;
+}
+
+.distribution-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.distribution-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.item-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+.item-name {
+  flex: 1;
+  font-size: 14px;
+}
+.item-percentage {
+  width: 60px;
+  text-align: right;
+  font-size: 14px;
+  font-weight: 600;
+}
+.item-amount {
+  width: 80px;
+  text-align: right;
+  font-size: 14px;
+  font-weight: 600;
 }
 </style>
