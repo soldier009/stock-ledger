@@ -28,7 +28,7 @@ import {
 } from '../services/calc'
 import { fetchQuotes, fetchRates } from '../services/quotes'
 import { fetchDayKlines } from '../services/kline'
-import { rateOf } from '../utils/format'
+import { rateOf, assetClass } from '../utils/format'
 import { DEFAULT_BROKER } from '../constants'
 import { useSettingsStore } from './settings'
 
@@ -152,6 +152,13 @@ export const usePortfolioStore = defineStore('portfolio', {
       this.stocks = all('SELECT * FROM stocks ORDER BY market, code')
     },
 
+    // 资产二级分类查询器：人工标注优先，未标注按市场与代码推断
+    _assetTypeResolver() {
+      const typeByKey = new Map()
+      for (const s of this.stocks) typeByKey.set(s.market + ':' + s.code, s.asset_type || '')
+      return (market, code) => assetClass(market, code, typeByKey.get(market + ':' + code))
+    },
+
     recompute() {
       const r = computeAll(this.trades, this.cashFlows, this.defaultBroker)
       const settings = useSettingsStore()
@@ -184,6 +191,8 @@ export const usePortfolioStore = defineStore('portfolio', {
           ...p,
           tag: st ? st.tag : '[]',
           note: st ? st.note : '',
+          // 资产二级分类的人工标注（空字符串表示按代码自动推断）
+          assetType: st && st.asset_type ? st.asset_type : '',
           broker: st && st.broker ? st.broker : this.defaultBroker,
           quote: q,
           price,
@@ -203,7 +212,9 @@ export const usePortfolioStore = defineStore('portfolio', {
       const totalPnl = totalAssets - r.principal
 
       this.positions = positions
-      this.realizedEvents = r.realizedEvents
+      // 每条已实现盈亏打上资产类别（股票/基金/可转债），供收益曲线按类别拆分
+      const assetTypeOf = this._assetTypeResolver()
+      this.realizedEvents = r.realizedEvents.map((e) => ({ ...e, asset: assetTypeOf(e.market, e.code) }))
       this.monthly = monthlyRealized(r.realizedEvents)
       this.yearly = yearlyRealized(r.realizedEvents)
       this.yearlyDetail = yearlyStockDetail(r.realizedEvents)
@@ -633,21 +644,25 @@ export const usePortfolioStore = defineStore('portfolio', {
     },
 
     // 新增/更新股票主数据（标签、备注、所属券商等）
-    async upsertStock({ market, code, name = '', tag = null, note = null, broker = null }) {
+    async upsertStock({ market, code, name = '', tag = null, note = null, broker = null, assetType = null }) {
       const exist = get('SELECT * FROM stocks WHERE market = ? AND code = ?', [market, code])
       if (exist) {
         if (name) run('UPDATE stocks SET name = ? WHERE id = ?', [name, exist.id])
         if (Array.isArray(tag)) run('UPDATE stocks SET tag = ? WHERE id = ?', [JSON.stringify(tag), exist.id])
         if (note !== null && note !== undefined) run('UPDATE stocks SET note = ? WHERE id = ?', [note, exist.id])
         if (broker) run('UPDATE stocks SET broker = ? WHERE id = ?', [broker, exist.id])
+        if (assetType !== null && assetType !== undefined) {
+          run('UPDATE stocks SET asset_type = ? WHERE id = ?', [assetType, exist.id])
+        }
       } else {
-        run('INSERT INTO stocks (market, code, name, tag, note, broker) VALUES (?,?,?,?,?,?)', [
+        run('INSERT INTO stocks (market, code, name, tag, note, broker, asset_type) VALUES (?,?,?,?,?,?,?)', [
           market,
           code,
           name,
           JSON.stringify(Array.isArray(tag) ? tag : []),
           note || '',
-          broker || this.defaultBroker
+          broker || this.defaultBroker,
+          assetType || ''
         ])
       }
       await this.loadData()
@@ -663,10 +678,11 @@ export const usePortfolioStore = defineStore('portfolio', {
       const tag = Array.isArray(patch.tag) ? JSON.stringify(patch.tag) : (exist?.tag ?? '[]')
       const note = patch.note ?? exist?.note ?? ''
       const broker = patch.broker ?? exist?.broker ?? this.defaultBroker
+      const assetType = patch.assetType ?? exist?.asset_type ?? ''
       if (exist) {
-        run('UPDATE stocks SET name = ?, tag = ?, note = ?, broker = ? WHERE id = ?', [name, tag, note, broker, exist.id])
+        run('UPDATE stocks SET name = ?, tag = ?, note = ?, broker = ?, asset_type = ? WHERE id = ?', [name, tag, note, broker, assetType, exist.id])
       } else {
-        run('INSERT INTO stocks (market, code, name, tag, note, broker) VALUES (?,?,?,?,?,?)', [market, code, name, tag, note, broker])
+        run('INSERT INTO stocks (market, code, name, tag, note, broker, asset_type) VALUES (?,?,?,?,?,?,?)', [market, code, name, tag, note, broker, assetType])
       }
       if (name) run('UPDATE trades SET name = ? WHERE market = ? AND code = ?', [name, market, code])
       if (syncTrades) {

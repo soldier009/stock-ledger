@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS stocks (
   tag TEXT DEFAULT '[]',
   note TEXT DEFAULT '',
   broker TEXT DEFAULT '',
+  asset_type TEXT DEFAULT '',
   created_at TEXT DEFAULT (datetime('now','localtime')),
   UNIQUE(market, code)
 );
@@ -72,6 +73,8 @@ CREATE INDEX IF NOT EXISTS idx_trades_mkt_code ON trades(market, code);
 function migrate() {
   // 老库没有 broker 列时补列（新库 SCHEMA 已包含，ALTER 会报错，忽略）
   try { run('ALTER TABLE stocks ADD COLUMN broker TEXT DEFAULT ""') } catch {}
+  // 资产二级分类（股票/基金/可转债），空表示按代码自动推断
+  try { run('ALTER TABLE stocks ADD COLUMN asset_type TEXT DEFAULT ""') } catch {}
   try { run('ALTER TABLE trades ADD COLUMN broker TEXT DEFAULT ""') } catch {}
   try { run('ALTER TABLE cash_flows ADD COLUMN broker TEXT DEFAULT ""') } catch {}
   // 初始建仓标记列（老库无此列时补列）

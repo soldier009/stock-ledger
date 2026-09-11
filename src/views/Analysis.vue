@@ -3,13 +3,37 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import dayjs from 'dayjs'
 import { usePortfolioStore } from '../stores/portfolio'
-import { drawdown } from '../services/calc'
+import { drawdown, cumulativeRealized } from '../services/calc'
 import { fmtMoney, fmtNum, fmtPct, pnlClass } from '../utils/format'
 
 const portfolio = usePortfolioStore()
-const activeTab = ref('curve')
 const calendarDate = ref(dayjs())
+// 日历卡片：「日历 / 柱形图」两档；柱形图档内再分月、年
+const calView = ref('calendar')
 const calMode = ref('month')
+const chartMode = ref('month')
+
+// 收益曲线：口径固定为「累计已实现盈亏」，只按资产类别（股票/基金/可转债）拆分，不含现金与持仓市值
+const CURVE_KINDS = [
+  { key: 'all', label: '累计已实现盈亏', short: '累计已实现盈亏', color: '#dc2626' },
+  { key: 'stock', label: '股票', short: '股票累计已实现盈亏', color: '#dc2626' },
+  { key: 'fund', label: '基金', short: '基金累计已实现盈亏', color: '#3b82f6' },
+  { key: 'bond', label: '可转债', short: '可转债累计已实现盈亏', color: '#f59e0b' }
+]
+const CURVE_MARKETS = [
+  { key: 'all', label: '全部' },
+  { key: 'A', label: 'A股' },
+  { key: 'HK', label: '港股' },
+  { key: 'US', label: '美股' }
+]
+const CURVE_RANGES = [
+  { key: 'ytd', label: '年初至今' },
+  { key: '1y', label: '最近一年' },
+  { key: 'all', label: '全部' }
+]
+const curveKind = ref('all')
+const curveMarket = ref('all')
+const curveRange = ref('all')
 
 const curveRef = ref(null)
 const drawdownRef = ref(null)
@@ -20,10 +44,50 @@ const charts = {}
 
 const totalCost = computed(() => portfolio.positions.reduce((a, p) => a + p.avgCost * p.shares * p.rate, 0))
 
+/** 曲线配色：hex -> rgba */
+function alpha(hex, a) {
+  const n = parseInt(hex.slice(1), 16)
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`
+}
+
+const curveKindMeta = computed(() => CURVE_KINDS.find((k) => k.key === curveKind.value) || CURVE_KINDS[0])
+
+// 时间范围起点（null 表示全部）
+const curveStart = computed(() => {
+  if (curveRange.value === 'ytd') return dayjs().startOf('year')
+  if (curveRange.value === '1y') return dayjs().subtract(1, 'year')
+  return null
+})
+
+// 当前「类别 × 市场 × 时间范围」下的曲线数据
+// 口径恒定：累计已实现盈亏（只取产生已实现盈亏的买卖/分红事件），按资产类别与市场筛选
+const curveData = computed(() => {
+  const kind = curveKind.value
+  const mkt = curveMarket.value
+  const start = curveStart.value
+  const events = portfolio.realizedEvents.filter(
+    (e) =>
+      (mkt === 'all' || e.market === mkt) &&
+      (kind === 'all' || e.asset === kind) &&
+      (!start || !dayjs(e.date).isBefore(start, 'day'))
+  )
+  return cumulativeRealized(events).map((p) => ({ date: p.date, value: p.value }))
+})
+
+const curveHasData = computed(() => curveData.value.some((p) => Math.abs(p.value) > 0.005))
+
 function initChart(ref, key) {
   if (!ref.value) return null
   if (!charts[key]) charts[key] = echarts.init(ref.value)
   return charts[key]
+}
+
+// 容器随 v-if 销毁后，旧图表实例需一并释放
+function resetChart(key) {
+  if (charts[key]) {
+    charts[key].dispose()
+    delete charts[key]
+  }
 }
 
 function commonOption() {
@@ -37,20 +101,22 @@ function commonOption() {
 function drawCurve() {
   const chart = initChart(curveRef, 'curve')
   if (!chart) return
-  const data = portfolio.cumulative
-  if (!data.length) { chart.clear(); return }
+  const data = curveData.value
+  if (!data.length || !curveHasData.value) { chart.clear(); return }
+  const meta = curveKindMeta.value
+  const c = meta.color
   chart.setOption({
     ...commonOption(),
     tooltip: { trigger: 'axis', valueFormatter: (v) => '¥' + fmtNum(v, 0) },
     xAxis: { type: 'category', boundaryGap: false, data: data.map((d) => d.date.slice(5)), axisLabel: { color: '#94a3b8', fontSize: 10 } },
     yAxis: { type: 'value', axisLabel: { color: '#94a3b8', fontSize: 10 }, splitLine: { lineStyle: { color: '#f1f5f9' } } },
     series: [{
-      name: '累计已实现盈亏', type: 'line', data: data.map((d) => Math.round(d.value * 100) / 100),
-      smooth: true, symbol: 'circle', symbolSize: 6, lineStyle: { color: '#dc2626', width: 2.5 },
-      itemStyle: { color: '#dc2626' },
-      areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(220,38,38,0.22)' }, { offset: 1, color: 'rgba(220,38,38,0.02)' }] } }
+      name: meta.short, type: 'line', data: data.map((d) => Math.round(d.value * 100) / 100),
+      smooth: true, symbol: 'circle', symbolSize: 6, lineStyle: { color: c, width: 2.5 },
+      itemStyle: { color: c },
+      areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: alpha(c, 0.22) }, { offset: 1, color: alpha(c, 0.02) }] } }
     }]
-  })
+  }, true)
 }
 
 // 回撤分析：范围页签
@@ -143,25 +209,40 @@ function drawYearly() {
   })
 }
 
-const drawMap = { curve: drawCurve, monthly: drawMonthly, yearly: drawYearly }
+// 收益曲线：切换类别 / 市场 / 时间范围后重绘
+watch([curveKind, curveMarket, curveRange], async () => { await nextTick(); drawCurve() })
 
-function redraw() {
-  drawMap[activeTab.value]?.()
-  // 非激活 tab 的图表曾以 0 宽度初始化，切换后需 resize 才能撑满容器居中显示
-  const chart = charts[activeTab.value]
-  if (chart) setTimeout(() => chart.resize(), 30)
+// 日历卡片切到柱形图档（或档内切月/年）时容器会重建，需重建图表实例
+watch([calView, chartMode], async () => {
+  await nextTick()
+  if (calView.value !== 'chart') return
+  if (chartMode.value === 'month') { resetChart('monthly'); drawMonthly() }
+  else { resetChart('yearly'); drawYearly() }
+})
+
+watch(ddRange, drawDrawdown)
+
+function drawVisible() {
+  drawCurve()
+  if (calView.value === 'chart') {
+    if (chartMode.value === 'month') drawMonthly()
+    else drawYearly()
+  }
 }
 
-watch(activeTab, async () => { await nextTick(); redraw() })
-watch(ddRange, drawDrawdown)
 watch(
-  () => [portfolio.monthly.length, portfolio.yearly.length, portfolio.cumulative.length, portfolio.netValue.length],
-  () => { redraw(); drawDrawdown() }
+  () => [portfolio.monthly.length, portfolio.yearly.length, portfolio.netValue.length, portfolio.realizedEvents.length],
+  () => { drawVisible(); drawDrawdown() }
 )
 
 function onResize() { Object.values(charts).forEach((c) => c && c.resize()) }
 
-onMounted(async () => { await nextTick(); redraw(); drawDrawdown(); window.addEventListener('resize', onResize) })
+onMounted(async () => {
+  await nextTick()
+  drawVisible()
+  drawDrawdown()
+  window.addEventListener('resize', onResize)
+})
 onBeforeUnmount(() => { window.removeEventListener('resize', onResize); Object.values(charts).forEach((c) => c && c.dispose()) })
 
 // 日历
@@ -300,13 +381,172 @@ function nextYear() { calendarDate.value = calendarDate.value.add(1, 'year') }
       </div>
     </div>
 
+    <!-- 收益曲线：类别 × 市场 × 时间范围 -->
     <div class="card">
-      <el-tabs v-model="activeTab" class="analysis-tabs">
-        <el-tab-pane label="收益曲线" name="curve">
-          <div ref="curveRef" class="chart"></div>
-        </el-tab-pane>
+      <div class="section-title">收益曲线</div>
+      <div class="curve-tabs">
+        <span
+          v-for="k in CURVE_KINDS"
+          :key="k.key"
+          class="curve-chip"
+          :class="{ active: curveKind === k.key }"
+          @click="curveKind = k.key"
+        >{{ k.label }}</span>
+      </div>
+      <div class="curve-tabs" style="margin-top: 8px">
+        <span
+          v-for="m in CURVE_MARKETS"
+          :key="m.key"
+          class="dd-chip"
+          :class="{ active: curveMarket === m.key }"
+          @click="curveMarket = m.key"
+        >{{ m.label }}</span>
+      </div>
+      <div class="curve-tabs" style="margin-top: 6px">
+        <span
+          v-for="r in CURVE_RANGES"
+          :key="r.key"
+          class="dd-chip"
+          :class="{ active: curveRange === r.key }"
+          @click="curveRange = r.key"
+        >{{ r.label }}</span>
+      </div>
+      <div ref="curveRef" class="chart"></div>
+      <div v-if="!curveHasData" class="muted" style="text-align: center; padding: 4px 0 8px">暂无数据</div>
+    </div>
 
-        <el-tab-pane label="月度" name="monthly">
+    <!-- 买卖盈亏日历：日历 / 柱形图 两档 -->
+    <div class="card calendar-card">
+      <div class="row between" style="margin-bottom: 12px">
+        <div class="section-title">买卖盈亏日历</div>
+        <div class="pie-switch">
+          <span :class="{ active: calView === 'calendar' }" @click="calView = 'calendar'">日历</span>
+          <span :class="{ active: calView === 'chart' }" @click="calView = 'chart'">柱形图</span>
+        </div>
+      </div>
+
+      <template v-if="calView === 'calendar'">
+        <!-- 月模式：选择月份 + 本月变动 + 日历 -->
+        <template v-if="calMode === 'month'">
+          <div class="calendar-nav">
+            <div class="nav-side">
+              <div class="nav-item">
+                <el-icon @click="prevYear"><ArrowLeft /></el-icon>
+                <span class="nav-year">{{ calendarDate.format('YYYY年') }}</span>
+                <el-icon @click="nextYear"><ArrowRight /></el-icon>
+              </div>
+            </div>
+            <div class="pie-switch">
+              <span :class="{ active: calMode === 'month' }" @click="calMode = 'month'">月</span>
+              <span :class="{ active: calMode === 'year' }" @click="calMode = 'year'">年</span>
+            </div>
+            <div class="nav-side right">
+              <div class="nav-item">
+                <el-icon @click="prevMonth"><ArrowLeft /></el-icon>
+                <span class="nav-month">{{ calendarDate.format('M月') }}</span>
+                <el-icon @click="nextMonth"><ArrowRight /></el-icon>
+              </div>
+            </div>
+          </div>
+          <div class="row between" style="margin-bottom: 12px">
+            <div>
+              <span class="muted">本月变动</span>
+              <span class="num" style="margin-left: 8px" :class="pnlClass(monthChange)">
+                {{ monthChange > 0 ? '+' : '' }}{{ fmtMoney(monthChange, 0) }}
+              </span>
+              <span v-if="monthChangePct !== null" class="num" style="margin-left: 6px" :class="pnlClass(monthChangePct)">
+                {{ monthChangePct > 0 ? '+' : '' }}{{ fmtPct(monthChangePct) }}
+              </span>
+            </div>
+            <div>
+              <span class="muted">本年变动</span>
+              <span class="num" style="margin-left: 8px" :class="pnlClass(yearChange)">
+                {{ yearChange > 0 ? '+' : '' }}{{ fmtMoney(yearChange, 0) }}
+              </span>
+              <span v-if="yearChangePct !== null" class="num" style="margin-left: 6px" :class="pnlClass(yearChangePct)">
+                {{ yearChangePct > 0 ? '+' : '' }}{{ fmtPct(yearChangePct) }}
+              </span>
+            </div>
+          </div>
+          <div class="calendar-header">
+            <span v-for="w in ['日','一','二','三','四','五','六']" :key="w">{{ w }}</span>
+          </div>
+          <div class="calendar-grid">
+            <div
+              v-for="d in calendarGrid"
+              :key="d.format('YYYY-MM-DD')"
+              class="calendar-cell"
+              :class="{ muted: !d.isSame(calendarDate, 'month'), today: d.isSame(dayjs(), 'day') }"
+            >
+              <div class="cell-date">{{ d.date() }}</div>
+              <template v-if="dailyMap[d.format('YYYY-MM-DD')]">
+                <div class="cell-pnl num" :class="pnlClass(dailyMap[d.format('YYYY-MM-DD')].amount)">
+                  {{ dailyMap[d.format('YYYY-MM-DD')].amount > 0 ? '+' : '' }}{{ fmtNum(dailyMap[d.format('YYYY-MM-DD')].amount, 0) }}
+                </div>
+                <div v-if="dayPct(d.format('YYYY-MM-DD')) !== null" class="cell-pct num" :class="pnlClass(dayPct(d.format('YYYY-MM-DD')))">
+                  {{ dayPct(d.format('YYYY-MM-DD')) > 0 ? '+' : '' }}{{ fmtPct(dayPct(d.format('YYYY-MM-DD'))) }}
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+
+        <!-- 年模式：选择年份 + 本年变动 + 全年每月数据 -->
+        <template v-else>
+          <div class="calendar-nav">
+            <div class="nav-side">
+              <div class="nav-item">
+                <el-icon @click="prevYear"><ArrowLeft /></el-icon>
+                <span class="nav-year">{{ calendarDate.format('YYYY年') }}</span>
+                <el-icon @click="nextYear"><ArrowRight /></el-icon>
+              </div>
+            </div>
+            <div class="pie-switch">
+              <span :class="{ active: calMode === 'month' }" @click="calMode = 'month'">月</span>
+              <span :class="{ active: calMode === 'year' }" @click="calMode = 'year'">年</span>
+            </div>
+            <div class="nav-side right"></div>
+          </div>
+          <div class="row" style="justify-content: flex-end; margin-bottom: 12px">
+            <div>
+              <span class="muted">本年变动</span>
+              <span class="num" style="margin-left: 8px" :class="pnlClass(yearChange)">
+                {{ yearChange > 0 ? '+' : '' }}{{ fmtMoney(yearChange, 0) }}
+              </span>
+              <span v-if="yearChangePct !== null" class="num" style="margin-left: 6px" :class="pnlClass(yearChangePct)">
+                {{ yearChangePct > 0 ? '+' : '' }}{{ fmtPct(yearChangePct) }}
+              </span>
+            </div>
+          </div>
+          <div class="year-grid">
+            <div
+              v-for="m in yearMonths"
+              :key="m.key"
+              class="year-cell"
+              :class="{ today: m.key === dayjs().format('MM') && calendarDate.isSame(dayjs(), 'year') }"
+            >
+              <div class="cell-date">{{ m.label }}</div>
+              <template v-if="m.amount !== 0">
+                <div class="cell-pnl num" :class="pnlClass(m.amount)">
+                  {{ m.amount > 0 ? '+' : '' }}{{ fmtNum(m.amount, 0) }}
+                </div>
+                <div v-if="m.pct !== null" class="cell-pct num" :class="pnlClass(m.pct)">
+                  {{ m.pct > 0 ? '+' : '' }}{{ fmtPct(m.pct) }}
+                </div>
+              </template>
+              <div v-else class="cell-empty">—</div>
+            </div>
+          </div>
+        </template>
+      </template>
+
+      <!-- 柱形图档：月 / 年 -->
+      <template v-else>
+        <div class="pie-switch seg">
+          <span :class="{ active: chartMode === 'month' }" @click="chartMode = 'month'">月</span>
+          <span :class="{ active: chartMode === 'year' }" @click="chartMode = 'year'">年</span>
+        </div>
+        <template v-if="chartMode === 'month'">
           <div ref="monthlyRef" class="chart"></div>
           <div v-if="portfolio.monthly.length">
             <el-table :data="portfolio.monthly" size="small">
@@ -320,8 +560,8 @@ function nextYear() { calendarDate.value = calendarDate.value.add(1, 'year') }
               <el-table-column label="笔数" prop="count" width="70" />
             </el-table>
           </div>
-        </el-tab-pane>
-        <el-tab-pane label="年度" name="yearly">
+        </template>
+        <template v-else>
           <div ref="yearlyRef" class="chart"></div>
           <div v-if="portfolio.yearly.length">
             <el-table :data="portfolio.yearly" size="small">
@@ -335,116 +575,7 @@ function nextYear() { calendarDate.value = calendarDate.value.add(1, 'year') }
               <el-table-column label="笔数" prop="count" width="70" />
             </el-table>
           </div>
-        </el-tab-pane>
-      </el-tabs>
-    </div>
-
-    <!-- 买卖盈亏日历 -->
-    <div class="card calendar-card">
-      <div class="row between" style="margin-bottom: 12px">
-        <div class="section-title">买卖盈亏日历</div>
-        <div class="pie-switch">
-          <span :class="{ active: calMode === 'month' }" @click="calMode = 'month'">月</span>
-          <span :class="{ active: calMode === 'year' }" @click="calMode = 'year'">年</span>
-        </div>
-      </div>
-
-      <!-- 月模式：选择月份 + 本月变动 + 日历 -->
-      <template v-if="calMode === 'month'">
-        <div class="calendar-nav">
-          <div class="nav-item">
-            <el-icon @click="prevYear"><ArrowLeft /></el-icon>
-            <span class="nav-year">{{ calendarDate.format('YYYY年') }}</span>
-            <el-icon @click="nextYear"><ArrowRight /></el-icon>
-          </div>
-          <div class="nav-item">
-            <el-icon @click="prevMonth"><ArrowLeft /></el-icon>
-            <span class="nav-month">{{ calendarDate.format('M月') }}</span>
-            <el-icon @click="nextMonth"><ArrowRight /></el-icon>
-          </div>
-        </div>
-        <div class="row between" style="margin-bottom: 12px">
-          <div>
-            <span class="muted">本月变动</span>
-            <span class="num" style="margin-left: 8px" :class="pnlClass(monthChange)">
-              {{ monthChange > 0 ? '+' : '' }}{{ fmtMoney(monthChange, 0) }}
-            </span>
-            <span v-if="monthChangePct !== null" class="num" style="margin-left: 6px" :class="pnlClass(monthChangePct)">
-              {{ monthChangePct > 0 ? '+' : '' }}{{ fmtPct(monthChangePct) }}
-            </span>
-          </div>
-          <div>
-            <span class="muted">本年变动</span>
-            <span class="num" style="margin-left: 8px" :class="pnlClass(yearChange)">
-              {{ yearChange > 0 ? '+' : '' }}{{ fmtMoney(yearChange, 0) }}
-            </span>
-            <span v-if="yearChangePct !== null" class="num" style="margin-left: 6px" :class="pnlClass(yearChangePct)">
-              {{ yearChangePct > 0 ? '+' : '' }}{{ fmtPct(yearChangePct) }}
-            </span>
-          </div>
-        </div>
-        <div class="calendar-header">
-          <span v-for="w in ['日','一','二','三','四','五','六']" :key="w">{{ w }}</span>
-        </div>
-        <div class="calendar-grid">
-          <div
-            v-for="d in calendarGrid"
-            :key="d.format('YYYY-MM-DD')"
-            class="calendar-cell"
-            :class="{ muted: !d.isSame(calendarDate, 'month'), today: d.isSame(dayjs(), 'day') }"
-          >
-            <div class="cell-date">{{ d.date() }}</div>
-            <template v-if="dailyMap[d.format('YYYY-MM-DD')]">
-              <div class="cell-pnl num" :class="pnlClass(dailyMap[d.format('YYYY-MM-DD')].amount)">
-                {{ dailyMap[d.format('YYYY-MM-DD')].amount > 0 ? '+' : '' }}{{ fmtNum(dailyMap[d.format('YYYY-MM-DD')].amount, 0) }}
-              </div>
-              <div v-if="dayPct(d.format('YYYY-MM-DD')) !== null" class="cell-pct num" :class="pnlClass(dayPct(d.format('YYYY-MM-DD')))">
-                {{ dayPct(d.format('YYYY-MM-DD')) > 0 ? '+' : '' }}{{ fmtPct(dayPct(d.format('YYYY-MM-DD'))) }}
-              </div>
-            </template>
-          </div>
-        </div>
-      </template>
-
-      <!-- 年模式：选择年份 + 本年变动 + 全年每月数据 -->
-      <template v-else>
-        <div class="calendar-nav">
-          <div class="nav-item">
-            <el-icon @click="prevYear"><ArrowLeft /></el-icon>
-            <span class="nav-year">{{ calendarDate.format('YYYY年') }}</span>
-            <el-icon @click="nextYear"><ArrowRight /></el-icon>
-          </div>
-        </div>
-        <div class="row" style="justify-content: flex-end; margin-bottom: 12px">
-          <div>
-            <span class="muted">本年变动</span>
-            <span class="num" style="margin-left: 8px" :class="pnlClass(yearChange)">
-              {{ yearChange > 0 ? '+' : '' }}{{ fmtMoney(yearChange, 0) }}
-            </span>
-            <span v-if="yearChangePct !== null" class="num" style="margin-left: 6px" :class="pnlClass(yearChangePct)">
-              {{ yearChangePct > 0 ? '+' : '' }}{{ fmtPct(yearChangePct) }}
-            </span>
-          </div>
-        </div>
-        <div class="year-grid">
-          <div
-            v-for="m in yearMonths"
-            :key="m.key"
-            class="year-cell"
-            :class="{ today: m.key === dayjs().format('MM') && calendarDate.isSame(dayjs(), 'year') }"
-          >
-            <div class="cell-date">{{ m.label }}</div>
-            <template v-if="m.amount !== 0">
-              <div class="cell-pnl num" :class="pnlClass(m.amount)">
-                {{ m.amount > 0 ? '+' : '' }}{{ fmtNum(m.amount, 0) }}
-              </div>
-              <div v-if="m.pct !== null" class="cell-pct num" :class="pnlClass(m.pct)">
-                {{ m.pct > 0 ? '+' : '' }}{{ fmtPct(m.pct) }}
-              </div>
-            </template>
-            <div v-else class="cell-empty">—</div>
-          </div>
-        </div>
+        </template>
       </template>
     </div>
 
@@ -527,12 +658,26 @@ function nextYear() { calendarDate.value = calendarDate.value.add(1, 'year') }
   font-weight: 700;
   margin-top: 4px;
 }
-.analysis-tabs {
-  margin-top: -4px;
+.curve-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
 }
-.analysis-tabs :deep(.el-tabs__nav) {
-  width: 100%;
-  justify-content: center;
+.curve-chip {
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 12px;
+  background: #f1f5f9;
+  color: var(--text-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.curve-chip.active {
+  background: #fdecec;
+  color: #dc2626;
+  font-weight: 600;
 }
 .chart {
   height: 300px;
@@ -542,7 +687,17 @@ function nextYear() { calendarDate.value = calendarDate.value.add(1, 'year') }
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
   margin-bottom: 12px;
+}
+.nav-side {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.nav-side.right {
+  justify-content: flex-end;
 }
 .nav-item {
   display: flex;
@@ -709,6 +864,15 @@ function nextYear() { calendarDate.value = calendarDate.value.add(1, 'year') }
 }
 .calendar-card .pie-switch span {
   font-size: 11px;
+}
+/* 柱形图档的「月 / 年」：水平居中，档位比右上角「日历 / 柱形图」更宽一点 */
+.calendar-card .pie-switch.seg {
+  width: fit-content;
+  margin: 0 auto 12px;
+}
+.calendar-card .pie-switch.seg span {
+  padding: 4px 22px;
+  font-size: 12px;
 }
 .calendar-card .cell-pnl {
   font-size: 9px;

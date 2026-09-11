@@ -5,7 +5,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePortfolioStore } from '../stores/portfolio'
 import { useSettingsStore } from '../stores/settings'
 import { computeAll } from '../services/calc'
-import { fmtMoney, fmtNum, fmtPct, pnlClass, marketLabel, parseTags, typeLabel, rateOf } from '../utils/format'
+import { fmtMoney, fmtNum, fmtPct, pnlClass, marketLabel, parseTags, typeLabel, rateOf, assetClass, assetClassLabel, ASSET_CLASSES } from '../utils/format'
 import { DEFAULT_BROKER } from '../constants'
 import TradeForm from '../components/TradeForm.vue'
 
@@ -21,6 +21,8 @@ const stock = computed(() => portfolio.stocks.find((s) => s.market === market &&
 const name = computed(() => stock.value?.name || portfolio.trades.find((t) => t.market === market && t.code === code)?.name || code)
 const tags = computed(() => parseTags(stock.value?.tag))
 const broker = computed(() => stock.value?.broker || portfolio.defaultBroker || DEFAULT_BROKER)
+// 资产二级分类：人工标注优先，未标注时按代码自动推断
+const assetTypeValue = computed(() => assetClass(market, code, stock.value?.asset_type))
 
 // 该股票全部交易记录（倒序）
 const stockTrades = computed(() =>
@@ -68,7 +70,7 @@ function openEdit(t) {
   tradeVisible.value = true
 }
 
-const infoForm = reactive({ name: '', tag: [], note: '', broker: '' })
+const infoForm = reactive({ name: '', tag: [], note: '', broker: '', assetType: '' })
 const tagSelect = ref(null)
 
 function openInfoEdit() {
@@ -76,6 +78,7 @@ function openInfoEdit() {
   infoForm.tag = [...tags.value]
   infoForm.note = stock.value?.note || ''
   infoForm.broker = broker.value
+  infoForm.assetType = stock.value?.asset_type || ''
   editVisible.value = true
 }
 
@@ -103,7 +106,8 @@ async function saveInfo() {
       name: infoForm.name.trim(),
       tag: [...infoForm.tag],
       note: infoForm.note.trim(),
-      broker: newBroker
+      broker: newBroker,
+      assetType: infoForm.assetType
     },
     syncTrades
   )
@@ -180,6 +184,7 @@ function syncTags(v) {
       </div>
       <div class="row gap8" style="margin-top: 8px">
         <el-tag size="small" effect="plain" type="success">{{ marketLabel(market) }}</el-tag>
+        <el-tag size="small" effect="plain">{{ assetClassLabel(assetTypeValue) }}</el-tag>
         <el-tag size="small" effect="plain" type="warning">{{ broker }}</el-tag>
         <el-tag v-for="tg in tags" :key="tg" size="small" effect="light" type="info">{{ tg }}</el-tag>
         <span v-if="!tags.length" class="muted">未设置标签</span>
@@ -288,6 +293,15 @@ function syncTags(v) {
           <el-option v-for="b in portfolio.brokers" :key="b" :label="b" :value="b" />
         </el-select>
         <div class="muted" style="margin-top: 4px">该股票的买卖资金在此券商账户内流动</div>
+      </el-form-item>
+      <el-form-item label="资产类型">
+        <el-select v-model="infoForm.assetType" style="width: 100%" placeholder="自动识别">
+          <el-option label="自动识别（按代码判断）" value="" />
+          <el-option v-for="c in ASSET_CLASSES" :key="c.value" :label="c.label" :value="c.value" />
+        </el-select>
+        <div class="muted" style="margin-top: 4px">
+          用于资产分布归类。A股按代码可自动区分股票/场内基金/可转债，港股美股 ETF 建议手动指定
+        </div>
       </el-form-item>
       <el-form-item label="标签（可多选，用于持仓分类）">
         <el-select

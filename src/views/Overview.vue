@@ -4,7 +4,7 @@ import * as echarts from 'echarts'
 import dayjs from 'dayjs'
 import { ArrowLeft, ArrowRight, View, Hide, Loading } from '@element-plus/icons-vue'
 import { usePortfolioStore } from '../stores/portfolio'
-import { fmtMoney, fmtNum, fmtPct, pnlClass, marketLabel, fmtTime, parseTags } from '../utils/format'
+import { fmtMoney, fmtNum, fmtPct, pnlClass, marketLabel, fmtTime, parseTags, assetClass, assetClassLabel } from '../utils/format'
 import { holdingDayDetail } from '../services/calc'
 import InitPositionForm from '../components/InitPositionForm.vue'
 import NetWorthCurve from '../components/NetWorthCurve.vue'
@@ -48,7 +48,6 @@ const totalCost = computed(() => portfolio.positions.reduce((a, p) => a + p.avgC
 
 // 持仓分布：按标签 / 按个股
 const pieMode = ref('tag')
-const assetMode = ref('total')
 const pieData = computed(() => {
   if (pieMode.value === 'tag') {
     const groups = {}
@@ -64,58 +63,78 @@ const pieData = computed(() => {
   return portfolio.positions.map((p) => ({ name: p.name || p.code, value: Math.round(p.mvCny * 100) / 100 }))
 })
 
-// 资产分布数据
-const distributionSegments = computed(() => {
-  const total = portfolio.totals.mvTotal
-  if (total === 0) return []
-  
-  let segments = []
-  
-  if (assetMode.value === 'total') {
-    // 总资产分布
-    segments = [
-      { name: '股票', value: portfolio.totals.stockValue, color: '#dc2626' },
-      { name: '基金', value: portfolio.totals.fundValue, color: '#3b82f6' },
-      { name: '现金/资产', value: portfolio.totals.cash, color: '#8b5cf6' }
-    ]
-  } else if (assetMode.value === 'stock') {
-    // 股票分布
-    const stockPositions = portfolio.positions.filter(p => p.market === 'A' || p.market === 'US')
-    const totalStock = stockPositions.reduce((sum, p) => sum + p.mvCny, 0)
-    if (totalStock === 0) return []
-    
-    segments = [
-      { name: 'A股', value: stockPositions.filter(p => p.market === 'A').reduce((sum, p) => sum + p.mvCny, 0), color: '#dc2626' },
-      { name: '美股', value: stockPositions.filter(p => p.market === 'US').reduce((sum, p) => sum + p.mvCny, 0), color: '#f59e0b' }
-    ]
-  } else if (assetMode.value === 'fund') {
-    // 基金分布
-    const fundPositions = portfolio.positions.filter(p => p.market === 'FUND')
-    const totalFund = fundPositions.reduce((sum, p) => sum + p.mvCny, 0)
-    if (totalFund === 0) return []
-    
-    segments = [
-      { name: '公募基金', value: totalFund, color: '#3b82f6' }
-    ]
-  } else if (assetMode.value === 'cash') {
-    // 现金/资产分布
-    segments = [
-      { name: '现金', value: portfolio.totals.cash, color: '#8b5cf6' }
-    ]
+// ===== 资产分布：第一级「市场」，第二级「资产类型」 =====
+const assetMode = ref('total') // 'total' 或市场代码 A / HK / US
+const MARKET_COLORS = { A: '#dc2626', HK: '#f59e0b', US: '#3b82f6', CASH: '#8b5cf6' }
+const CLASS_COLORS = { stock: '#dc2626', fund: '#3b82f6', bond: '#f59e0b', other: '#64748b' }
+
+// 各市场内部的资产类型构成：{ A: { stock: 123, fund: 456 }, ... }
+const classByMarket = computed(() => {
+  const map = {}
+  for (const p of portfolio.positions) {
+    const cls = assetClass(p.market, p.code, p.assetType)
+    const m = map[p.market] || (map[p.market] = {})
+    m[cls] = (m[cls] || 0) + (Number(p.mvCny) || 0)
   }
-  
-  return segments.map(segment => ({
-    ...segment,
-    width: total > 0 ? Math.round((segment.value / total) * 100) : 0
-  }))
+  return map
 })
 
-const distributionItems = computed(() => {
-  return distributionSegments.value.map(segment => ({
-    ...segment,
-    percentage: total > 0 ? Math.round((segment.value / total) * 100) : 0
-  }))
-}))
+function toClassRows(classes) {
+  return Object.entries(classes || {})
+    .filter(([, v]) => v > 0)
+    .map(([cls, v]) => ({
+      key: cls,
+      name: assetClassLabel(cls),
+      value: v,
+      color: CLASS_COLORS[cls] || CLASS_COLORS.other
+    }))
+    .sort((a, b) => b.value - a.value)
+}
+
+// 有持仓的市场（无持仓的市场不展示）
+const marketList = computed(() =>
+  ['A', 'HK', 'US']
+    .map((m) => {
+      const classes = classByMarket.value[m] || {}
+      const value = Object.values(classes).reduce((a, b) => a + b, 0)
+      return { market: m, label: marketLabel(m), value, classes }
+    })
+    .filter((x) => x.value > 0)
+    .sort((a, b) => b.value - a.value)
+)
+
+// 第一级 tab：只列出有持仓的市场
+const marketTabs = computed(() => marketList.value.map((m) => ({ key: m.market, label: m.label })))
+
+// 持仓变化导致当前市场消失（如清仓）时，回到总资产视图
+watch(marketTabs, (tabs) => {
+  if (assetMode.value !== 'total' && !tabs.some((t) => t.key === assetMode.value)) assetMode.value = 'total'
+})
+
+// 分布数据：rows 为第一级项，children 为第二级资产类型
+const distribution = computed(() => {
+  if (assetMode.value === 'total') {
+    const rows = marketList.value.map((m) => ({
+      key: m.market,
+      name: m.label,
+      value: m.value,
+      color: MARKET_COLORS[m.market] || CLASS_COLORS.other,
+      children: toClassRows(m.classes)
+    }))
+    const cash = Number(portfolio.totals.cash) || 0
+    if (cash > 0) rows.push({ key: 'CASH', name: '现金', value: cash, color: MARKET_COLORS.CASH, children: [] })
+    return { rows, total: rows.reduce((a, b) => a + b.value, 0) }
+  }
+  const m = marketList.value.find((x) => x.market === assetMode.value)
+  const rows = toClassRows(m ? m.classes : {})
+  return { rows, total: m ? m.value : 0 }
+})
+
+// 占比：分母为当前视图合计（总资产视图含现金），一级与二级共用，不会出现 NaN
+function distPct(value, total) {
+  if (!(total > 0)) return '0.0'
+  return (((Number(value) || 0) / total) * 100).toFixed(1)
+}
 
 // ===== 当日持仓盈亏日历 =====
 const hMode = ref('month')
@@ -404,27 +423,41 @@ onBeforeUnmount(() => {
       
       <div class="distribution-tabs">
         <span :class="{ active: assetMode === 'total' }" @click="assetMode = 'total'">总资产</span>
-        <span :class="{ active: assetMode === 'stock' }" @click="assetMode = 'stock'">股票</span>
-        <span :class="{ active: assetMode === 'fund' }" @click="assetMode = 'fund'">基金</span>
-        <span :class="{ active: assetMode === 'cash' }" @click="assetMode = 'cash'">现金/资产</span>
-      </div>
-      
-      <div class="distribution-bar">
-        <div class="bar-segment" 
-             v-for="(segment, index) in distributionSegments" 
-             :key="index"
-             :style="{ backgroundColor: segment.color, width: segment.width + '%' }">
-        </div>
+        <span
+          v-for="t in marketTabs"
+          :key="t.key"
+          :class="{ active: assetMode === t.key }"
+          @click="assetMode = t.key"
+        >{{ t.label }}</span>
       </div>
 
-      <div class="distribution-list">
-        <div v-for="(item, index) in distributionItems" :key="index" class="distribution-item">
-          <div class="item-dot" :style="{ backgroundColor: item.color }"></div>
-          <div class="item-name">{{ item.name }}</div>
-          <div class="item-percentage">{{ item.percentage }}%</div>
-          <div class="item-amount">¥{{ fmtMoney(item.amount, 0) }}</div>
+      <template v-if="distribution.rows.length">
+        <div class="distribution-bar">
+          <div class="bar-segment"
+               v-for="row in distribution.rows"
+               :key="row.key"
+               :style="{ backgroundColor: row.color, width: distPct(row.value, distribution.total) + '%' }">
+          </div>
         </div>
-      </div>
+
+        <div class="distribution-list">
+          <template v-for="row in distribution.rows" :key="row.key">
+            <div class="distribution-item">
+              <div class="item-dot" :style="{ backgroundColor: row.color }"></div>
+              <div class="item-name">{{ row.name }}</div>
+              <div class="item-percentage">{{ distPct(row.value, distribution.total) }}%</div>
+              <div class="item-amount">{{ fmtMoney(row.value, 0) }}</div>
+            </div>
+            <div v-for="child in row.children" :key="row.key + '-' + child.key" class="distribution-item sub-item">
+              <div class="item-dot small" :style="{ backgroundColor: child.color }"></div>
+              <div class="item-name sub-name">{{ child.name }}</div>
+              <div class="item-percentage">{{ distPct(child.value, distribution.total) }}%</div>
+              <div class="item-amount">{{ fmtMoney(child.value, 0) }}</div>
+            </div>
+          </template>
+        </div>
+      </template>
+      <div v-else class="muted" style="text-align: center; padding: 20px">暂无持仓数据</div>
     </div>
 
     <!-- 持仓分布 -->
@@ -1036,8 +1069,8 @@ onBeforeUnmount(() => {
 }
 
 .distribution-bar {
-  height: 24px;
-  border-radius: 12px;
+  height: 10px;
+  border-radius: 5px;
   background: #f1f5f9;
   margin-bottom: 16px;
   overflow: hidden;
@@ -1057,25 +1090,36 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 12px;
 }
+.distribution-item.sub-item {
+  padding-left: 20px;
+}
 .item-dot {
   width: 12px;
   height: 12px;
   border-radius: 50%;
 }
+.item-dot.small {
+  width: 8px;
+  height: 8px;
+}
 .item-name {
   flex: 1;
-  font-size: 14px;
+  font-size: 13px;
+}
+.item-name.sub-name {
+  font-size: 12px;
+  color: var(--text-2, #64748b);
 }
 .item-percentage {
   width: 60px;
   text-align: right;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
 }
 .item-amount {
   width: 80px;
   text-align: right;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
 }
 </style>
