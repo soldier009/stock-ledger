@@ -4,7 +4,7 @@ import * as echarts from 'echarts'
 import dayjs from 'dayjs'
 import { usePortfolioStore } from '../stores/portfolio'
 import { drawdown, cumulativeRealized } from '../services/calc'
-import { fmtMoney, fmtNum, fmtPct, pnlClass } from '../utils/format'
+import { fmtMoney, fmtNum, fmtPct, fmtShares, pnlClass } from '../utils/format'
 
 const portfolio = usePortfolioStore()
 const calendarDate = ref(dayjs())
@@ -334,6 +334,59 @@ function prevMonth() { calendarDate.value = calendarDate.value.subtract(1, 'mont
 function nextMonth() { calendarDate.value = calendarDate.value.add(1, 'month') }
 function prevYear() { calendarDate.value = calendarDate.value.subtract(1, 'year') }
 function nextYear() { calendarDate.value = calendarDate.value.add(1, 'year') }
+
+// ===== 点击日历日期：查看当日卖出（已实现盈亏）明细 =====
+const showSellDrawer = ref(false)
+const selSellDay = ref('')
+
+function openSellDay(dateStr) {
+  if (!dailyMap.value[dateStr]) return
+  selSellDay.value = dateStr
+  showSellDrawer.value = true
+}
+
+// 当日明细：与日历格同口径（同一批 realizedEvents），按盈亏金额降序
+const sellRows = computed(() => {
+  const day = dailyMap.value[selSellDay.value]
+  if (!day) return []
+  const tradeMap = new Map(portfolio.trades.map((t) => [t.id, t]))
+  return day.events
+    .map((e) => {
+      const t = tradeMap.get(e.id) || {}
+      const qty = Number(t.shares) || 0
+      const price = Number(t.price) || 0
+      const isSell = e.type === 'sell'
+      // 由「已实现盈亏 =（卖出价 − 成本价）× 股数 − 费用 − 税费」反推成本价
+      const cost = isSell && qty > 0 ? price - (e.amount + (Number(t.fee) || 0) + (Number(t.tax) || 0)) / qty : null
+      const pct = cost && cost > 0 && qty > 0 ? (e.amount / (cost * qty)) * 100 : null
+      return {
+        id: e.id,
+        name: e.name || e.code,
+        code: e.code,
+        market: e.market,
+        type: e.type,
+        amount: e.amount,
+        qty,
+        price,
+        pct,
+        broker: t.broker || ''
+      }
+    })
+    .sort((a, b) => b.amount - a.amount)
+})
+
+const sellDayTotal = computed(() => (dailyMap.value[selSellDay.value] || {}).amount || 0)
+const sellCount = computed(() => sellRows.value.filter((r) => r.type === 'sell').length)
+const divCount = computed(() => sellRows.value.length - sellCount.value)
+const sellDayTitle = computed(() => (selSellDay.value ? dayjs(selSellDay.value).format('YYYY年M月D日') : ''))
+const sellDrawerTitle = computed(() => {
+  if (sellCount.value && divCount.value) return '当日卖出 / 分红明细'
+  return sellCount.value ? '当日卖出明细' : '当日分红明细'
+})
+function signedMoney(v) {
+  if (!v) return fmtMoney(0, 0)
+  return `${v > 0 ? '+' : ''}${fmtMoney(v, 0)}`
+}
 </script>
 
 <template>
@@ -476,7 +529,12 @@ function nextYear() { calendarDate.value = calendarDate.value.add(1, 'year') }
               v-for="d in calendarGrid"
               :key="d.format('YYYY-MM-DD')"
               class="calendar-cell"
-              :class="{ muted: !d.isSame(calendarDate, 'month'), today: d.isSame(dayjs(), 'day') }"
+              :class="{
+                muted: !d.isSame(calendarDate, 'month'),
+                today: d.isSame(dayjs(), 'day'),
+                clickable: !!dailyMap[d.format('YYYY-MM-DD')]
+              }"
+              @click="openSellDay(d.format('YYYY-MM-DD'))"
             >
               <div class="cell-date">{{ d.date() }}</div>
               <template v-if="dailyMap[d.format('YYYY-MM-DD')]">
@@ -639,6 +697,46 @@ function nextYear() { calendarDate.value = calendarDate.value.add(1, 'year') }
       </div>
       <div v-else class="muted" style="text-align: center; padding: 12px">暂无回撤数据</div>
     </div>
+
+    <!-- 点击日历日期：当日卖出明细 -->
+    <el-drawer
+      v-model="showSellDrawer"
+      direction="btt"
+      :size="`min(560px, 72vh)`"
+      :with-header="false"
+      class="sd-drawer"
+    >
+      <div class="sd-head">
+        <span class="sd-date">{{ sellDayTitle }}</span>
+        <span class="sd-title">{{ sellDrawerTitle }}</span>
+      </div>
+      <div class="sd-summary">
+        <span class="muted">当日已实现盈亏</span>
+        <span class="num sd-total" :class="pnlClass(sellDayTotal)">{{ signedMoney(sellDayTotal) }}</span>
+        <span class="sd-sub">
+          <template v-if="sellCount">{{ sellCount }} 笔卖出</template>
+          <template v-if="sellCount && divCount"> · </template>
+          <template v-if="divCount">{{ divCount }} 笔分红</template>
+        </span>
+      </div>
+      <div class="sd-list">
+        <div v-for="(it, i) in sellRows" :key="i" class="sd-item">
+          <div class="sd-item-main">
+            <span class="sd-name">{{ it.name }}</span>
+            <span class="sd-sub">
+              {{ it.code }}<template v-if="it.broker"> · {{ it.broker }}</template>
+            </span>
+            <span v-if="it.type === 'sell'" class="sd-sub">卖出 {{ fmtShares(it.qty) }} 股 @ {{ it.price }}</span>
+            <span v-else class="sd-sub">分红</span>
+          </div>
+          <div class="sd-item-side">
+            <span class="sd-amt num" :class="pnlClass(it.amount)">{{ signedMoney(it.amount) }}</span>
+            <span v-if="it.pct !== null" class="sd-sub num">{{ it.pct > 0 ? '+' : '' }}{{ fmtPct(it.pct) }}</span>
+          </div>
+        </div>
+        <div v-if="!sellRows.length" class="sd-empty">当日无明细</div>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -748,6 +846,13 @@ function nextYear() { calendarDate.value = calendarDate.value.add(1, 'year') }
 }
 .calendar-cell.today {
   border: 1.5px solid var(--primary);
+}
+/* 有盈亏的日期可点击，展开当日卖出明细 */
+.calendar-cell.clickable {
+  cursor: pointer;
+}
+.calendar-cell.clickable:active {
+  background: #eef2f7;
 }
 .cell-date {
   font-size: 11px;
@@ -889,7 +994,93 @@ function nextYear() { calendarDate.value = calendarDate.value.add(1, 'year') }
 .calendar-card .year-cell .cell-pnl {
   font-size: 9px;
 }
+
+.sd-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.sd-date {
+  font-size: 15px;
+  font-weight: 700;
+}
+.sd-title {
+  font-size: 12px;
+  color: var(--text-2);
+}
+.sd-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.sd-total {
+  font-size: 15px;
+  font-weight: 700;
+}
+.sd-list {
+  max-height: 52vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.sd-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 0;
+  border-bottom: 1px solid #f1f5f9;
+}
+.sd-item-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.sd-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+.sd-sub {
+  font-size: 11px;
+  color: var(--text-2);
+}
+.sd-item-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.sd-amt {
+  font-size: 13px;
+  font-weight: 700;
+}
+.sd-empty {
+  text-align: center;
+  color: var(--text-2);
+  font-size: 12px;
+  padding: 20px 0;
+}
 .calendar-card .year-cell .cell-pct {
   font-size: 7px;
 }
 </style>
+
+<!--
+  抽屉容器样式必须是全局的：el-drawer 会 teleport 到 body，
+  它渲染的 .el-drawer 元素不继承父组件的 data-v，scoped 选择器命中不到。
+-->
+<style>
+.sd-drawer {
+  left: 0 !important;
+  right: 0 !important;
+  width: min(420px, 100%) !important;
+  max-width: 100% !important;
+  margin: 0 auto !important;
+  border-radius: 14px 14px 0 0 !important;
+  overflow: hidden !important;
+}
+</style>
+
