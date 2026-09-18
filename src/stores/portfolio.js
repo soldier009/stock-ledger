@@ -21,14 +21,16 @@ import {
   yearlyRealized,
   yearlyStockDetail,
   cumulativeRealized,
+  buildClosedRounds,
   netValueSeries,
+  assetValueSeries,
   dailyRealized,
   dailyHoldingPnl,
   drawdown
 } from '../services/calc'
 import { fetchQuotes, fetchRates } from '../services/quotes'
 import { fetchDayKlines } from '../services/kline'
-import { rateOf, assetClass } from '../utils/format'
+import { rateOf, assetClass, parseTags } from '../utils/format'
 import { DEFAULT_BROKER } from '../constants'
 import { useSettingsStore } from './settings'
 
@@ -61,7 +63,12 @@ export const usePortfolioStore = defineStore('portfolio', {
     yearly: [],
     yearlyDetail: [],
     cumulative: [],
+    // 已清仓记录（按持仓批次切分，每轮清仓一条）
+    closedRounds: [],
+    closedStat: { count: 0, stockCount: 0, realized: 0, win: 0, loss: 0 },
     netValue: [],
+    // 资产曲线：逐日持仓市值 + 按市场 / 按标签的拆分
+    assetSeries: [],
     dailyPnl: [],
     drawdownStats: null,
     dailyHolding: [],
@@ -159,6 +166,17 @@ export const usePortfolioStore = defineStore('portfolio', {
       return (market, code) => assetClass(market, code, typeByKey.get(market + ':' + code))
     },
 
+    // 标签归组查询器：一只股票有多个标签时只取第一个，
+    // 保证各标签分组市值之和 = 总市值（资产曲线堆叠才有意义）
+    _tagResolver() {
+      const tagByKey = new Map()
+      for (const s of this.stocks) {
+        const t = parseTags(s.tag)
+        tagByKey.set(s.market + ':' + s.code, t.length ? t[0] : '')
+      }
+      return (market, code) => tagByKey.get(market + ':' + code) || ''
+    },
+
     recompute() {
       const r = computeAll(this.trades, this.cashFlows, this.defaultBroker)
       const settings = useSettingsStore()
@@ -219,6 +237,9 @@ export const usePortfolioStore = defineStore('portfolio', {
       this.yearly = yearlyRealized(r.realizedEvents)
       this.yearlyDetail = yearlyStockDetail(r.realizedEvents)
       this.cumulative = cumulativeRealized(r.realizedEvents)
+      const cr = buildClosedRounds(this.trades)
+      this.closedRounds = cr.rounds
+      this.closedStat = cr.stat
 
       this.dailyPnl = dailyRealized(r.realizedEvents)
       this.refreshSeries(rates)
@@ -305,6 +326,15 @@ export const usePortfolioStore = defineStore('portfolio', {
       for (const p of this.positions) currentPrices[p.market + ':' + p.code] = p.price
       const today = new Date().toISOString().slice(0, 10)
       this.netValue = netValueSeries(this.trades, this.cashFlows, currentPrices, r, today, this.klineCache.bySymbol)
+      this.assetSeries = assetValueSeries(
+        this.trades,
+        this.cashFlows,
+        currentPrices,
+        r,
+        today,
+        this.klineCache.bySymbol,
+        this._tagResolver()
+      )
       this.drawdownStats = drawdown(this.netValue)
       let rows = dailyHoldingPnl(this.trades, this.klineCache.bySymbol, this.rates)
       // “今天”这一格单独用实时行情口径：Σ 每只当前持仓 (现价 − 昨收) × 现持股

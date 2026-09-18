@@ -2,6 +2,9 @@ import { rateOf } from '../utils/format'
 import { DEFAULT_BROKER } from '../constants'
 import dayjs from 'dayjs'
 
+/** 无标签持仓在「按标签」分组里的归组键 */
+export const NO_TAG = '未分类'
+
 /**
  * 核心计算引擎：按时间顺序重放交易记录
  * 成本核算方式：移动加权平均
@@ -163,6 +166,162 @@ export function cumulativeRealized(realizedEvents) {
   return points
 }
 
+function daysBetween(start, end) {
+  if (!start) return 0
+  const a = new Date(start + 'T00:00:00')
+  const b = end ? new Date(end + 'T00:00:00') : new Date()
+  const d = Math.round((b - a) / 86400000)
+  return d > 0 ? d : 0
+}
+
+/**
+ * 已清仓记录：按「持仓批次（round trip）」切分
+ * - 同一只股票：首次买入 → 清仓 = 一批次；清仓后再买入 = 开启新批次，所以每轮清仓各有一条记录
+ *   （若按「当前是否无持仓」判断，清仓后又买入的股票会查不到，历史那轮就丢了）
+ * - 成本核算与 computeAll 一致：移动加权平均
+ * - 分红计入所属批次；清仓后才到账的分红归入最近结束的批次，不丢失
+ * - 收益率 = 已实现盈亏（含分红）÷ 该批次累计买入成本（含费用）
+ * @param {Array} trades 全部交易记录
+ * @returns {{ rounds: Array, stocks: Array, stat: Object }}
+ */
+export function buildClosedRounds(trades) {
+  const sorted = [...(trades || [])].sort((a, b) =>
+    String(a.date) === String(b.date)
+      ? (Number(a.id) || 0) - (Number(b.id) || 0)
+      : String(a.date).localeCompare(String(b.date))
+  )
+  const byKey = new Map()
+  const all = []
+  const EPS = 1e-6
+
+  const stateOf = (t) => {
+    const key = t.market + ':' + t.code
+    let s = byKey.get(key)
+    if (!s) {
+      s = { key, market: t.market, code: t.code, name: t.name || '', open: null, lastClosed: null, closed: [] }
+      byKey.set(key, s)
+    }
+    if (t.name && !s.name) s.name = t.name
+    return s
+  }
+
+  const newRound = (s, t) => {
+    const r = {
+      key: s.key,
+      market: s.market,
+      code: s.code,
+      name: t.name || s.name || s.code,
+      index: s.closed.length + 1,
+      total: 0,
+      start: t.date,
+      end: '',
+      shares: 0,
+      basis: 0,
+      avgCost: 0,
+      buyAmount: 0,
+      sellAmount: 0,
+      realized: 0,
+      div: 0,
+      tradeCount: 0,
+      trades: []
+    }
+    s.open = r
+    all.push(r)
+    return r
+  }
+
+  for (const t of sorted) {
+    const type = t.type
+    if (type === 'buy' || type === 'rights' || type === 'gift') {
+      const s = stateOf(t)
+      const r = s.open || newRound(s, t)
+      if (t.name && !r.name) r.name = t.name
+      const qty = Number(t.shares) || 0
+      const fee = Number(t.fee) || 0
+      const tax = Number(t.tax) || 0
+      // 送股只增加股数、不增加成本（与 computeAll 的 gift 分支一致）
+      const cost = type === 'gift' ? fee + tax : Number(t.price) * qty + fee + tax
+      r.shares += qty
+      r.basis += cost
+      r.avgCost = r.shares > EPS ? r.basis / r.shares : 0
+      r.buyAmount += cost
+      r.tradeCount += 1
+      r.trades.push({ ...t, qty, cost, realized: null })
+    } else if (type === 'sell') {
+      const s = stateOf(t)
+      const r = s.open
+      if (!r || r.shares <= EPS) continue
+      const qty = Math.min(Number(t.shares) || 0, r.shares)
+      const fee = Number(t.fee) || 0
+      const tax = Number(t.tax) || 0
+      const realized = (Number(t.price) - r.avgCost) * qty - fee - tax
+      const proceeds = Number(t.price) * qty - fee - tax
+      r.basis -= r.avgCost * qty
+      r.shares -= qty
+      r.avgCost = r.shares > EPS ? r.basis / r.shares : 0
+      r.sellAmount += proceeds
+      r.realized += realized
+      r.tradeCount += 1
+      r.trades.push({ ...t, qty, realized, proceeds })
+      if (r.shares <= EPS) {
+        r.shares = 0
+        r.end = t.date
+        s.open = null
+        s.lastClosed = r
+        s.closed.push(r)
+      }
+    } else if (type === 'div') {
+      const s = stateOf(t)
+      const amt = Number(t.amount) || 0
+      if (!amt) continue
+      const r = s.open || s.lastClosed
+      if (!r) continue
+      r.realized += amt
+      r.div += amt
+      r.tradeCount += 1
+      r.trades.push({ ...t, qty: 0, realized: amt })
+    }
+  }
+
+  const rounds = []
+  const stocks = []
+  for (const s of byKey.values()) {
+    const total = s.closed.length + (s.open ? 1 : 0)
+    for (const r of s.closed) {
+      r.total = total
+      r.pnlPct = r.buyAmount ? (r.realized / r.buyAmount) * 100 : 0
+      r.days = daysBetween(r.start, r.end)
+      rounds.push(r)
+    }
+    if (s.open) {
+      s.open.total = total
+      s.open.pnlPct = 0
+      s.open.days = daysBetween(s.open.start, '')
+    }
+    if (s.closed.length || s.open) {
+      stocks.push({
+        key: s.key,
+        market: s.market,
+        code: s.code,
+        name: s.name || s.code,
+        total,
+        closed: s.closed,
+        holding: s.open || null
+      })
+    }
+  }
+  // 最近清仓的排在最前
+  rounds.sort((a, b) => (a.end === b.end ? a.key.localeCompare(b.key) : a.end < b.end ? 1 : -1))
+  const stat = {
+    count: rounds.length,
+    stockCount: new Set(rounds.map((r) => r.key)).size,
+    realized: rounds.reduce((a, r) => a + r.realized, 0),
+    win: rounds.filter((r) => r.realized > 0).length,
+    loss: rounds.filter((r) => r.realized < 0).length
+  }
+  return { rounds, stocks, stat }
+}
+
 /**
  * 净资产曲线：逐交易日按真实收盘价估值
  * 口径：某日净资产 = 当日收盘后现金 + Σ 持仓股数 × 当日收盘价(前复权) × 汇率。
@@ -179,7 +338,12 @@ export function cumulativeRealized(realizedEvents) {
  * @param {Object} klines 行情缓存 { 'A:600000': { days: [[date, close], ...] } }，days 升序
  * @returns {Array} [{ date, netValue, cash, marketValue }] 按日期升序
  */
-export function netValueSeries(trades, cashFlows, currentPrices, rates, currentDate, klines) {
+/**
+ * 逐日资产重放（净资产曲线与资产曲线共用）
+ * tagOf(market, code) -> 该股票的归组标签；不传时按标签拆分的结果全部落在 NO_TAG
+ * 返回：{ date, cash, marketValue, byMarket, byTag, notes }
+ */
+function buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, klines, tagOf) {
   // —— 补录历史持仓（初始建仓）并入净资产序列起点 ——
   // 「新建仓」录入的是本软件记账前就已持有的股票，其买入与自动入金都发生在补录当天；
   // 若仅从补录日开始计算，会在该日凭空产生“记账前浮盈亏”的台阶。
@@ -281,7 +445,7 @@ export function netValueSeries(trades, cashFlows, currentPrices, rates, currentD
   const ensurePos = (market, code) => {
     const key = `${market}:${code}`
     if (!posMap.has(key)) {
-      posMap.set(key, { market, code, shares: 0, basis: 0, avgCost: 0 })
+      posMap.set(key, { market, code, shares: 0, basis: 0, avgCost: 0, tag: tagOf ? tagOf(market, code) || '' : '' })
     }
     return posMap.get(key)
   }
@@ -361,15 +525,45 @@ export function netValueSeries(trades, cashFlows, currentPrices, rates, currentD
     }
 
     let mv = 0
+    const byMarket = {}
+    const byTag = {}
     for (const p of posMap.values()) {
       if (p.shares > 1e-6) {
         const price = priceOf(`${p.market}:${p.code}`, date, p)
-        mv += p.shares * price * rateOf(p.market, rates)
+        const v = p.shares * price * rateOf(p.market, rates)
+        mv += v
+        byMarket[p.market] = (byMarket[p.market] || 0) + v
+        const t = p.tag || NO_TAG
+        byTag[t] = (byTag[t] || 0) + v
       }
     }
-    points.push({ date, netValue: cash + mv, cash, marketValue: mv, notes: noteMap.get(date) || [] })
+    points.push({ date, cash, marketValue: mv, byMarket, byTag, notes: noteMap.get(date) || [] })
   }
   return points
+}
+
+/** 净资产曲线（现金 + 持仓市值），供总览走势图与回撤分析使用 */
+export function netValueSeries(trades, cashFlows, currentPrices, rates, currentDate, klines) {
+  return buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, klines, null).map((p) => ({
+    date: p.date,
+    netValue: p.cash + p.marketValue,
+    cash: p.cash,
+    marketValue: p.marketValue,
+    notes: p.notes
+  }))
+}
+
+/**
+ * 资产曲线：逐日持仓市值，并按市场 / 按标签拆出各分组市值（不含现金）
+ * tagOf 与 NO_TAG 同 buildDailyAssets
+ */
+export function assetValueSeries(trades, cashFlows, currentPrices, rates, currentDate, klines, tagOf) {
+  return buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, klines, tagOf).map((p) => ({
+    date: p.date,
+    marketValue: p.marketValue,
+    byMarket: p.byMarket,
+    byTag: p.byTag
+  }))
 }
 
 /** 按日汇总已实现盈亏（用于盈亏日历） */

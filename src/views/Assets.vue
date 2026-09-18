@@ -219,13 +219,9 @@ async function onRefresh() {
   padding-bottom: 16px;
 }
 .section-title {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 700;
   margin-bottom: 12px;
-}
-/* 资产页文字整体调小一号 */
-.page-title {
-  font-size: 19px;
 }
 .muted {
   font-size: 11px;

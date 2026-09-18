@@ -8,10 +8,12 @@ import { fmtMoney, fmtNum, fmtPct, pnlClass, marketLabel, fmtTime, parseTags, as
 import { holdingDayDetail } from '../services/calc'
 import InitPositionForm from '../components/InitPositionForm.vue'
 import NetWorthCurve from '../components/NetWorthCurve.vue'
+import ClosedRounds from '../components/ClosedRounds.vue'
 
 const portfolio = usePortfolioStore()
 const showInit = ref(false)
 const showCurve = ref(false)
+const showClosed = ref(false)
 const showMoney = ref(true)
 const pieRef = ref(null)
 let pieChart = null
@@ -375,9 +377,27 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </div>
+
+      <div class="closed-entry" @click.stop="showClosed = true">
+        <div class="closed-entry-left">
+          <span class="closed-entry-title">已清仓</span>
+          <span class="muted" style="font-size: 12px">
+            {{ portfolio.closedStat.count }} 笔 · {{ portfolio.closedStat.stockCount }} 只
+          </span>
+        </div>
+        <div class="closed-entry-right">
+          <span
+            v-if="portfolio.closedStat.count"
+            class="num"
+            :class="pnlClass(portfolio.closedStat.realized)"
+          >{{ portfolio.closedStat.realized > 0 ? '+' : '' }}{{ fmtMoney(portfolio.closedStat.realized, 0) }}</span>
+          <el-icon :size="18" style="color: #94a3b8"><ArrowRight /></el-icon>
+        </div>
+      </div>
     </div>
 
     <NetWorthCurve v-model="showCurve" />
+    <ClosedRounds v-model="showClosed" />
 
     <!-- 关键指标 -->
     <div class="metrics card">
@@ -715,6 +735,40 @@ onBeforeUnmount(() => {
   width: 1px;
   height: 32px;
   background: #e2e8f0;
+}
+/* 已清仓记录入口：放在净资产卡片底部，点卡片其他区域仍是净资产走势 */
+.closed-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #f1f5f9;
+  cursor: pointer;
+}
+.closed-entry-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.closed-entry-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+}
+.closed-entry-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.closed-entry-right .up {
+  color: #dc2626;
+}
+.closed-entry-right .down {
+  color: #10b981;
 }
 .pie-chart {
   height: 260px;

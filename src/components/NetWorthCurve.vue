@@ -84,14 +84,24 @@ const initialInfo = computed(() => {
   }
 })
 
-// 日视图：所选时间区间内净资产的变化金额（区间首条 → 最新一条）
+// 区间起点基准：区间开始日之前最近的一条净资产（= 区间开始前的账户状态）
+// 这样区间内每一天（含第一天）的出入金都落在「变化」里，与下面的资金进出统计口径一致；
+// 账户数据全部落在区间内时没有更早的点，此时基准为 0（账户自此处起才有净资产）
+const dayBase = computed(() => {
+  const start = startOfRange(dayRange.value).format('YYYY-MM-DD')
+  let prev = null
+  for (const p of portfolio.netValue) if (p.date < start) prev = p
+  return { value: prev ? prev.netValue : 0, date: prev ? prev.date : '' }
+})
+
+// 日视图：所选时间区间内净资产的变化金额（区间起点前的状态 → 最新一条）
 const periodChange = computed(() => {
   const data = dayData.value
-  if (!data.length) return { value: 0, pct: 0 }
-  const first = data[0].netValue
+  if (!data.length) return { value: 0, pct: 0, base: 0 }
+  const base = dayBase.value.value
   const last = data[data.length - 1].netValue
-  const v = last - first
-  return { value: v, pct: first ? (v / first) * 100 : 0 }
+  const v = last - base
+  return { value: v, pct: base ? (v / base) * 100 : 0, base }
 })
 
 function baseOption() {
@@ -116,6 +126,37 @@ function baseOption() {
       splitLine: { lineStyle: { color: '#f1f5f9' } }
     }
   }
+}
+
+// 纵轴范围：让曲线/柱子的最高点落在绘图区约 3/4 高度处，上方留出空间，
+// 避免折线顶到上方的提示文字、以及入金标记（pin）被裁掉
+// fromZero=true 用于柱状图（0 在底部，最高点 = 3/4）
+// bottomRatio 用于日曲线：纵轴底部取「区间内总资产最小值 × bottomRatio」，
+// 使曲线起伏与其占总资产的真实比例接近，不至于把很小的日波动画成剧烈震荡
+function axisRange(values, fromZero, bottomRatio) {
+  const nums = (values || []).filter((v) => typeof v === 'number' && isFinite(v))
+  if (!nums.length) return {}
+  const lo = Math.min(...nums)
+  const hi = Math.max(...nums)
+  if (bottomRatio && lo > 0) {
+    const min = lo * bottomRatio
+    // 最高点仍落在绘图区 3/4 高度处
+    const max = min + ((hi - min) * 4) / 3
+    return { min, max: max > min ? max : min + 1 }
+  }
+  if (fromZero) {
+    const top = Math.max(hi, 0)
+    if (top <= 0) return { min: 0, max: 1 }
+    return { min: Math.min(0, lo), max: (top * 4) / 3 }
+  }
+  if (hi === lo) {
+    const pad = Math.abs(hi) || 1
+    return { min: lo - pad * 0.5, max: hi + pad * 1.5 }
+  }
+  const span = hi - lo
+  const bottom = 0.12
+  const top = (1 + bottom) / 3 // 使数据最高点落在绘图区 75% 高度处
+  return { min: lo - span * bottom, max: hi + span * top }
 }
 
 // 金额简写（1.2万 等），用于折线上的资金事件标签
@@ -147,18 +188,49 @@ function netFlow(flows) {
   return (flows || []).reduce((a, f) => a + (f.type === 'deposit' ? f.amount : -f.amount), 0)
 }
 
-// 日视图：区间内「投资收益」与「资金进出」拆分
-const dayBreakdown = computed(() => {
-  const data = dayData.value
-  if (!data.length) return { invest: 0, flow: 0, investPct: 0, flowPct: 0 }
-  const cash = dayRows(data).reduce((sum, r) => sum + netFlow(r.flows), 0)
-  const invest = periodChange.value.value - cash
-  const denom = Math.abs(invest) + Math.abs(cash)
+// 「投资收益」与「资金进出」按两个独立口径统计（累计值，不随上方区间切换变化）：
+//   投资收益 = 买卖盈亏的全部金额总和 = 已实现盈亏（卖出） + 现金分红 + 当前持仓浮动盈亏
+//   资金进出 = 各股票建仓成本合计（买入/配股，含费用） + 入金合计 − 出金合计
+// 注1：totalRealized 已包含现金分红（calc.js 中分红到账即计入），这里把分红单列出来展示，
+//      「已实现」一行显示的是纯买卖盈亏
+// 注2：初始建仓会自动生成一笔等额入金，这里只计建仓成本，不再重复计入那笔自动入金，
+//     否则本金会被算两遍（这也是之前把建仓金额当成收益的根源）
+const capitalBreakdown = computed(() => {
+  const realized = Number(portfolio.totals?.totalRealized) || 0
+  const floating = Number(portfolio.totals?.floating) || 0
+  let dividend = 0
+  for (const e of portfolio.realizedEvents) {
+    if (e.type === 'div') dividend += Number(e.amount) || 0
+  }
+  const tradeRealized = realized - dividend // 纯买卖带来的已实现盈亏
+  let buyCost = 0
+  for (const t of portfolio.trades) {
+    if (t.type !== 'buy' && t.type !== 'rights') continue
+    buyCost +=
+      (Number(t.price) || 0) * (Number(t.shares) || 0) + (Number(t.fee) || 0) + (Number(t.tax) || 0)
+  }
+  let deposit = 0
+  let withdraw = 0
+  for (const c of portfolio.cashFlows) {
+    const amt = Number(c.amount) || 0
+    if (c.type === 'deposit') {
+      if (c.origin !== 'initial') deposit += amt // 初始建仓的自动入金 = 建仓成本，已计入 buyCost
+    } else if (c.type === 'withdraw') {
+      withdraw += amt
+    }
+  }
+  const invest = realized + floating
+  const flow = buyCost + deposit - withdraw
   return {
     invest,
-    flow: cash,
-    investPct: denom ? (Math.abs(invest) / denom) * 100 : 0,
-    flowPct: denom ? (Math.abs(cash) / denom) * 100 : 0
+    realized: tradeRealized,
+    dividend,
+    floating,
+    flow,
+    buyCost,
+    deposit,
+    withdraw,
+    roi: flow ? (invest / flow) * 100 : 0
   }
 })
 
@@ -211,7 +283,7 @@ function drawDay() {
       boundaryGap: false,
       data: xs
     },
-    yAxis: baseOption().yAxis,
+    yAxis: { ...baseOption().yAxis, ...axisRange(rows.map((r) => r.v), false, 0.25) },
     series: [{
       name: '净资产',
       type: 'line',
@@ -305,7 +377,7 @@ function drawMonth() {
       ...baseOption().xAxis,
       data: data.map((d) => d.month)
     },
-    yAxis: baseOption().yAxis,
+    yAxis: { ...baseOption().yAxis, ...axisRange(data.map((d) => d.netValue), true) },
     series: [{
       name: '净资产',
       type: 'bar',
@@ -342,7 +414,7 @@ function drawYear() {
       ...baseOption().xAxis,
       data: data.map((d) => d.year + '年')
     },
-    yAxis: baseOption().yAxis,
+    yAxis: { ...baseOption().yAxis, ...axisRange(data.map((d) => d.netValue), true) },
     series: [{
       name: '净资产',
       type: 'bar',
@@ -404,6 +476,43 @@ function close() {
   visible.value = false
 }
 
+// 右滑关闭：移动端没有物理返回键，向右拖动面板超过阈值即返回总览
+const dragX = ref(0)
+const dragging = ref(false)
+let startX = 0
+let startY = 0
+
+const panelStyle = computed(() => (dragX.value ? { transform: `translateX(${dragX.value}px)` } : {}))
+
+function onTouchStart(e) {
+  const t = e.touches && e.touches[0]
+  if (!t) return
+  startX = t.clientX
+  startY = t.clientY
+  dragging.value = false
+}
+
+function onTouchMove(e) {
+  const t = e.touches && e.touches[0]
+  if (!t) return
+  const dx = t.clientX - startX
+  const dy = t.clientY - startY
+  if (!dragging.value) {
+    // 只接管明显向右的横向滑动，纵向滚动不受影响
+    if (dx > 10 && Math.abs(dx) > Math.abs(dy) * 1.5) dragging.value = true
+    else return
+  }
+  dragX.value = Math.max(0, Math.min(dx, 260))
+  if (e.cancelable) e.preventDefault()
+}
+
+function onTouchEnd() {
+  const passed = dragX.value > 72
+  dragging.value = false
+  dragX.value = 0
+  if (passed) close()
+}
+
 watch([() => mode.value, () => dayRange.value, () => portfolio.netValue.length], async () => {
   await nextTick()
   draw()
@@ -447,7 +556,15 @@ onBeforeUnmount(() => {
 <template>
   <teleport to="body">
     <div v-if="visible" class="nw-overlay" @click.self="close">
-      <div class="nw-panel">
+      <div
+        class="nw-panel"
+        :class="{ dragging }"
+        :style="panelStyle"
+        @touchstart.passive="onTouchStart"
+        @touchmove="onTouchMove"
+        @touchend="onTouchEnd"
+        @touchcancel="onTouchEnd"
+      >
         <div class="nw-header">
           <div class="nw-back" @click="close">
             <el-icon :size="22"><ArrowLeft /></el-icon>
@@ -465,7 +582,7 @@ onBeforeUnmount(() => {
             </div>
             <div v-if="mode === 'day'" class="nw-value nw-range-value" :class="['num', pnlClass(periodChange.value)]">
               {{ periodChange.value > 0 ? '+' : '' }}{{ fmtMoney(periodChange.value, 0) }}
-              <span class="nw-pct">({{ periodChange.value > 0 ? '+' : '' }}{{ fmtPct(periodChange.pct) }})</span>
+              <span v-if="periodChange.base" class="nw-pct">({{ periodChange.value > 0 ? '+' : '' }}{{ fmtPct(periodChange.pct) }})</span>
             </div>
             <div v-else class="nw-value num">{{ fmtMoney(latest.netValue, 0) }}</div>
           </div>
@@ -505,25 +622,36 @@ onBeforeUnmount(() => {
 
         <div v-if="mode === 'day'" class="nw-breakdown">
           <div class="nw-bd-row">
-            <div class="nw-bd-icon" :class="pnlClass(dayBreakdown.invest)">
+            <div class="nw-bd-icon" :class="pnlClass(capitalBreakdown.invest)">
               <el-icon :size="18"><TrendCharts /></el-icon>
             </div>
-            <div class="nw-bd-label">投资收益</div>
+            <div class="nw-bd-label">
+              投资收益
+              <div class="nw-bd-sub">
+                已实现 {{ fmtMoney(capitalBreakdown.realized, 0) }} · 分红 {{ fmtMoney(capitalBreakdown.dividend, 0) }} · 浮动 {{ fmtMoney(capitalBreakdown.floating, 0) }}
+              </div>
+            </div>
             <div class="nw-bd-right">
-              <div class="nw-bd-num" :class="pnlClass(dayBreakdown.invest)">{{ (dayBreakdown.invest > 0 ? '+' : '') + fmtMoney(dayBreakdown.invest, 0) }}</div>
-              <div class="nw-bd-pct">占比 {{ fmtPct(dayBreakdown.investPct) }}</div>
+              <div class="nw-bd-num" :class="pnlClass(capitalBreakdown.invest)">{{ (capitalBreakdown.invest > 0 ? '+' : '') + fmtMoney(capitalBreakdown.invest, 0) }}</div>
+              <div class="nw-bd-pct">占本金 {{ fmtPct(capitalBreakdown.roi) }}</div>
             </div>
           </div>
           <div class="nw-bd-row nw-capital">
             <div class="nw-bd-icon">
               <el-icon :size="18"><Wallet /></el-icon>
             </div>
-            <div class="nw-bd-label">资金进出</div>
+            <div class="nw-bd-label">
+              资金进出
+              <div class="nw-bd-sub">
+                建仓成本 {{ fmtMoney(capitalBreakdown.buyCost, 0) }} · 入金 {{ fmtMoney(capitalBreakdown.deposit, 0) }}
+              </div>
+            </div>
             <div class="nw-bd-right">
-              <div class="nw-bd-num" :class="pnlClass(dayBreakdown.flow)">{{ (dayBreakdown.flow > 0 ? '+' : '') + fmtMoney(dayBreakdown.flow, 0) }}</div>
-              <div class="nw-bd-pct">占比 {{ fmtPct(dayBreakdown.flowPct) }}</div>
+              <div class="nw-bd-num">{{ fmtMoney(capitalBreakdown.flow, 0) }}</div>
+              <div class="nw-bd-pct">出金 {{ fmtMoney(capitalBreakdown.withdraw, 0) }}</div>
             </div>
           </div>
+          <div class="nw-bd-note">投资收益 = 买卖已实现盈亏 + 现金分红 + 持仓浮动盈亏；资金进出 = 建仓成本 + 入金 − 出金</div>
         </div>
       </div>
     </div>
@@ -550,6 +678,11 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  transition: transform 0.22s ease;
+}
+/* 跟手拖动时不要过渡，否则会有延迟感 */
+.nw-panel.dragging {
+  transition: none;
 }
 .nw-header {
   display: flex;
@@ -673,6 +806,14 @@ onBeforeUnmount(() => {
   font-size: 14px;
   color: #334155;
 }
+.nw-bd-sub {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-top: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .nw-bd-right {
   text-align: right;
 }
@@ -689,6 +830,12 @@ onBeforeUnmount(() => {
 .nw-bd-pct {
   font-size: 11px;
   color: #94a3b8;
+}
+.nw-bd-note {
+  font-size: 11px;
+  line-height: 1.5;
+  color: #94a3b8;
+  padding: 0 2px;
 }
 .range-bar {
   display: flex;

@@ -3,7 +3,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import dayjs from 'dayjs'
 import { usePortfolioStore } from '../stores/portfolio'
-import { drawdown, cumulativeRealized } from '../services/calc'
+import { drawdown, cumulativeRealized, NO_TAG } from '../services/calc'
 import { fmtMoney, fmtNum, fmtPct, fmtShares, pnlClass } from '../utils/format'
 
 const portfolio = usePortfolioStore()
@@ -35,14 +35,39 @@ const curveKind = ref('all')
 const curveMarket = ref('all')
 const curveRange = ref('all')
 
+// 资产曲线：大类（全部 / 按标签 / 按股票）× 小类 × 时间范围
+// 口径固定为「逐日持仓市值（不含现金）」，估值用当日收盘价（缺行情时回退成本价）
+const ASSET_DIMS = [
+  { key: 'all', label: '全部' },
+  { key: 'tag', label: '按标签' },
+  { key: 'stock', label: '按股票' }
+]
+const ASSET_RANGES = [
+  { key: 'all', label: '全部' },
+  { key: '1y', label: '近一年' }
+]
+const MARKET_SERIES = [
+  { key: 'A', label: 'A股', color: '#dc2626' },
+  { key: 'HK', label: '港股', color: '#f59e0b' },
+  { key: 'US', label: '美股', color: '#3b82f6' }
+]
+const TAG_COLORS = ['#dc2626', '#f59e0b', '#3b82f6', '#10b981', '#8b5cf6', '#06b6d4']
+const OTHER_TAG = '__other__'
+// 标签过多时只画市值前 N 个，其余合并为「其他」，避免图形过碎
+const MAX_TAG_SERIES = 6
+const assetDim = ref('all')
+const assetSub = ref('all')
+const assetRange = ref('all')
+
 const curveRef = ref(null)
+const assetRef = ref(null)
 const drawdownRef = ref(null)
 const monthlyRef = ref(null)
 const yearlyRef = ref(null)
 
 const charts = {}
 
-const totalCost = computed(() => portfolio.positions.reduce((a, p) => a + p.avgCost * p.shares * p.rate, 0))
+
 
 /** 曲线配色：hex -> rgba */
 function alpha(hex, a) {
@@ -116,6 +141,173 @@ function drawCurve() {
       itemStyle: { color: c },
       areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: alpha(c, 0.22) }, { offset: 1, color: alpha(c, 0.02) }] } }
     }]
+  }, true)
+}
+
+// ===== 资产曲线 =====
+
+const assetStart = computed(() => (assetRange.value === '1y' ? dayjs().subtract(1, 'year') : null))
+
+const assetRows = computed(() => {
+  const start = assetStart.value
+  return (portfolio.assetSeries || []).filter((p) => !start || !dayjs(p.date).isBefore(start, 'day'))
+})
+
+/** 收集时间范围内出现过的分组键 */
+function collectGroupKeys(rows, dim) {
+  const keys = new Set()
+  for (const p of rows) {
+    const g = (dim === 'tag' ? p.byTag : p.byMarket) || {}
+    for (const [k, v] of Object.entries(g)) if ((v || 0) > 0.005) keys.add(k)
+  }
+  return keys
+}
+
+// 分组键：市场按 A / 港股 / 美股 固定顺序；标签按最新一天市值降序
+const assetGroupKeys = computed(() => {
+  const rows = assetRows.value
+  if (assetDim.value === 'all' || !rows.length) return []
+  if (assetDim.value === 'stock') {
+    const keys = collectGroupKeys(rows, 'stock')
+    return MARKET_SERIES.filter((m) => keys.has(m.key)).map((m) => m.key)
+  }
+  const last = rows[rows.length - 1].byTag || {}
+  return [...collectGroupKeys(rows, 'tag')].sort((a, b) => (last[b] || 0) - (last[a] || 0))
+})
+
+const assetTagKeys = computed(() => {
+  const keys = assetGroupKeys.value
+  if (assetDim.value !== 'tag') return { top: keys, rest: [] }
+  return { top: keys.slice(0, MAX_TAG_SERIES), rest: keys.slice(MAX_TAG_SERIES) }
+})
+
+// 小类选项：随大类变化，第一项恒为「全部」
+const assetSubOptions = computed(() => {
+  const opts = [{ key: 'all', label: '全部' }]
+  if (assetDim.value === 'stock') {
+    for (const k of assetGroupKeys.value) {
+      const m = MARKET_SERIES.find((x) => x.key === k)
+      opts.push({ key: k, label: m ? m.label : k })
+    }
+  } else if (assetDim.value === 'tag') {
+    const { top, rest } = assetTagKeys.value
+    for (const k of top) opts.push({ key: k, label: k === NO_TAG ? '未分类' : k })
+    if (rest.length) opts.push({ key: OTHER_TAG, label: '其他' })
+  }
+  return opts
+})
+
+function r2(v) {
+  return Math.round((Number(v) || 0) * 100) / 100
+}
+
+// 当前选择下的曲线数据：小类选「全部」时多组堆叠，选具体项时只画该组
+const assetChart = computed(() => {
+  const rows = assetRows.value
+  const dates = rows.map((p) => p.date)
+  if (!rows.length) return { dates: [], series: [] }
+  const dim = assetDim.value
+  const sub = assetSub.value
+  if (dim === 'all') {
+    return { dates, series: [{ name: '持仓市值', color: '#dc2626', data: rows.map((p) => r2(p.marketValue)) }] }
+  }
+  if (dim === 'stock') {
+    const keys = assetGroupKeys.value.filter((k) => sub === 'all' || k === sub)
+    return {
+      dates,
+      series: keys.map((k) => {
+        const m = MARKET_SERIES.find((x) => x.key === k) || { label: k, color: '#64748b' }
+        return { name: m.label, color: m.color, data: rows.map((p) => r2((p.byMarket || {})[k] || 0)) }
+      })
+    }
+  }
+  const { top, rest } = assetTagKeys.value
+  const keys = sub === 'all' ? top : [sub]
+  return {
+    dates,
+    series: keys.map((k) => {
+      const isOther = k === OTHER_TAG
+      const idx = Math.max(0, top.indexOf(k))
+      return {
+        name: isOther ? '其他' : k === NO_TAG ? '未分类' : k,
+        color: isOther ? '#94a3b8' : TAG_COLORS[idx % TAG_COLORS.length],
+        data: rows.map((p) => {
+          const g = p.byTag || {}
+          if (isOther) return r2(rest.reduce((a, kk) => a + (g[kk] || 0), 0))
+          return r2(g[k] || 0)
+        })
+      }
+    })
+  }
+})
+
+const assetHasData = computed(() => assetChart.value.series.some((s) => s.data.some((v) => Math.abs(v) > 0.005)))
+
+function drawAssetCurve() {
+  const chart = initChart(assetRef, 'asset')
+  if (!chart) return
+  const { dates, series } = assetChart.value
+  if (!dates.length || !assetHasData.value) { chart.clear(); return }
+  const multi = series.length > 1
+  chart.setOption({
+    ...commonOption(),
+    grid: { left: 64, right: 20, top: multi ? 24 : 20, bottom: multi ? 48 : 34 },
+    ...(multi
+      ? {
+          legend: {
+            data: series.map((s) => s.name),
+            bottom: 4,
+            itemWidth: 10,
+            itemHeight: 10,
+            itemGap: 10,
+            textStyle: { fontSize: 10, color: '#64748b' }
+          }
+        }
+      : {}),
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params) => {
+        const arr = Array.isArray(params) ? params : [params]
+        if (!arr.length) return ''
+        let total = 0
+        const lines = arr.map((p) => {
+          const v = Number(p.value) || 0
+          total += v
+          return `${p.marker}${p.seriesName}　¥${fmtNum(v, 0)}`
+        })
+        if (arr.length > 1) lines.push(`合计　¥${fmtNum(total, 0)}`)
+        return [arr[0].axisValueLabel || '', ...lines].join('<br/>')
+      }
+    },
+    xAxis: { type: 'category', boundaryGap: false, data: dates.map((d) => d.slice(5)), axisLabel: { color: '#94a3b8', fontSize: 10 }, axisLine: { lineStyle: { color: '#e2e8f0' } } },
+    yAxis: {
+      type: 'value',
+      axisLabel: {
+        color: '#94a3b8',
+        fontSize: 10,
+        formatter: (v) => (Math.abs(v) >= 10000 ? (v / 10000).toFixed(1) + '万' : String(Math.round(v)))
+      },
+      splitLine: { lineStyle: { color: '#f1f5f9' } }
+    },
+    series: series.map((s) => ({
+      name: s.name,
+      type: 'line',
+      stack: multi ? 'asset' : undefined,
+      data: s.data,
+      smooth: true,
+      symbol: 'none',
+      lineStyle: { color: s.color, width: multi ? 1.2 : 2.5 },
+      itemStyle: { color: s.color },
+      areaStyle: {
+        color: {
+          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [
+            { offset: 0, color: alpha(s.color, multi ? 0.55 : 0.22) },
+            { offset: 1, color: alpha(s.color, multi ? 0.28 : 0.02) }
+          ]
+        }
+      }
+    }))
   }, true)
 }
 
@@ -212,6 +404,10 @@ function drawYearly() {
 // 收益曲线：切换类别 / 市场 / 时间范围后重绘
 watch([curveKind, curveMarket, curveRange], async () => { await nextTick(); drawCurve() })
 
+// 资产曲线：换大类时小类回到「全部」，随后重绘
+watch(assetDim, async () => { assetSub.value = 'all'; await nextTick(); drawAssetCurve() })
+watch([assetSub, assetRange], async () => { await nextTick(); drawAssetCurve() })
+
 // 日历卡片切到柱形图档（或档内切月/年）时容器会重建，需重建图表实例
 watch([calView, chartMode], async () => {
   await nextTick()
@@ -224,6 +420,7 @@ watch(ddRange, drawDrawdown)
 
 function drawVisible() {
   drawCurve()
+  drawAssetCurve()
   if (calView.value === 'chart') {
     if (chartMode.value === 'month') drawMonthly()
     else drawYearly()
@@ -231,7 +428,7 @@ function drawVisible() {
 }
 
 watch(
-  () => [portfolio.monthly.length, portfolio.yearly.length, portfolio.netValue.length, portfolio.realizedEvents.length],
+  () => [portfolio.monthly.length, portfolio.yearly.length, portfolio.netValue.length, portfolio.assetSeries.length, portfolio.realizedEvents.length],
   () => { drawVisible(); drawDrawdown() }
 )
 
@@ -395,43 +592,39 @@ function signedMoney(v) {
       <div class="page-title">分析</div>
     </div>
 
-    <!-- 成本与盈亏 -->
+    <!-- 资产曲线：大类（全部 / 按标签 / 按股票）× 小类 × 时间范围 -->
     <div class="card">
-      <div class="section-title">成本与盈亏</div>
-      <div class="metric-grid">
-        <div>
-          <div class="muted">成本</div>
-          <div class="num value">{{ fmtMoney(totalCost, 0) }}</div>
-        </div>
-        <div>
-          <div class="muted">资产总金额</div>
-          <div class="num value">{{ fmtMoney(portfolio.totals.totalAssets, 0) }}</div>
-        </div>
-        <div>
-          <div class="muted">已实现盈亏</div>
-          <div class="num value" :class="pnlClass(portfolio.totals.totalRealized)">
-            {{ portfolio.totals.totalRealized > 0 ? '+' : '' }}{{ fmtMoney(portfolio.totals.totalRealized, 0) }}
-          </div>
-        </div>
-        <div>
-          <div class="muted">浮动盈亏</div>
-          <div class="num value" :class="pnlClass(portfolio.totals.floating)">
-            {{ portfolio.totals.floating > 0 ? '+' : '' }}{{ fmtMoney(portfolio.totals.floating, 0) }}
-          </div>
-        </div>
-        <div>
-          <div class="muted">盈亏</div>
-          <div class="num value" :class="pnlClass(portfolio.totals.totalPnl)">
-            {{ portfolio.totals.totalPnl > 0 ? '+' : '' }}{{ fmtMoney(portfolio.totals.totalPnl, 0) }}
-          </div>
-        </div>
-        <div>
-          <div class="muted">浮动盈亏率</div>
-          <div class="num value" :class="pnlClass(portfolio.totals.totalPnl)">
-            {{ portfolio.totals.totalPnlPct === null ? '—' : (portfolio.totals.totalPnlPct > 0 ? '+' : '') + fmtPct(portfolio.totals.totalPnlPct) }}
-          </div>
-        </div>
+      <div class="section-title">资产曲线</div>
+      <div class="curve-tabs">
+        <span
+          v-for="d in ASSET_DIMS"
+          :key="d.key"
+          class="curve-chip"
+          :class="{ active: assetDim === d.key }"
+          @click="assetDim = d.key"
+        >{{ d.label }}</span>
       </div>
+      <div v-if="assetDim !== 'all'" class="curve-tabs" style="margin-top: 8px">
+        <span
+          v-for="o in assetSubOptions"
+          :key="o.key"
+          class="dd-chip"
+          :class="{ active: assetSub === o.key }"
+          @click="assetSub = o.key"
+        >{{ o.label }}</span>
+      </div>
+      <div class="curve-tabs" style="margin-top: 6px">
+        <span
+          v-for="r in ASSET_RANGES"
+          :key="r.key"
+          class="dd-chip"
+          :class="{ active: assetRange === r.key }"
+          @click="assetRange = r.key"
+        >{{ r.label }}</span>
+      </div>
+      <div ref="assetRef" class="chart"></div>
+      <div v-if="!assetHasData" class="muted" style="text-align: center; padding: 4px 0 8px">暂无数据</div>
+      <div class="muted" style="font-size: 11px; margin-top: 2px">口径：持仓市值（不含现金），按当日收盘价估值</div>
     </div>
 
     <!-- 收益曲线：类别 × 市场 × 时间范围 -->
