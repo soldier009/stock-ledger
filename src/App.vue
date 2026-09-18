@@ -131,19 +131,21 @@ watch(
       <router-view />
     </div>
     <nav class="tabbar">
-      <router-link to="/" class="tab" :class="{ active: route.path === '/' }">
+      <!-- 底部 tab 切换用 replace：不往历史栈里堆条目，
+           否则在浮层打开时触发系统返回手势会退到上一个 tab，而不是关闭浮层 -->
+      <router-link to="/" replace class="tab" :class="{ active: route.path === '/' }">
         <el-icon :size="22"><Grid /></el-icon>
         <span>总览</span>
       </router-link>
-      <router-link to="/assets" class="tab" :class="{ active: route.path === '/assets' }">
+      <router-link to="/assets" replace class="tab" :class="{ active: route.path === '/assets' }">
         <el-icon :size="22"><Box /></el-icon>
         <span>资产</span>
       </router-link>
-      <router-link to="/analysis" class="tab" :class="{ active: route.path === '/analysis' }">
+      <router-link to="/analysis" replace class="tab" :class="{ active: route.path === '/analysis' }">
         <el-icon :size="22"><TrendCharts /></el-icon>
         <span>分析</span>
       </router-link>
-      <router-link to="/settings" class="tab" :class="{ active: route.path === '/settings' }">
+      <router-link to="/settings" replace class="tab" :class="{ active: route.path === '/settings' }">
         <el-icon :size="22"><Setting /></el-icon>
         <span>设置</span>
       </router-link>

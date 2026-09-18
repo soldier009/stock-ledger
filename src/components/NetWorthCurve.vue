@@ -5,6 +5,7 @@ import dayjs from 'dayjs'
 import { ArrowLeft, TrendCharts, Wallet } from '@element-plus/icons-vue'
 import { usePortfolioStore } from '../stores/portfolio'
 import { fmtMoney, fmtNum, fmtPct, pnlClass } from '../utils/format'
+import { useOverlayHistory } from '../utils/useOverlayHistory'
 
 const props = defineProps({ modelValue: Boolean })
 const emit = defineEmits(['update:modelValue'])
@@ -475,6 +476,8 @@ function watchChartSize(on) {
 function close() {
   visible.value = false
 }
+// 接管系统返回手势（iOS 左边缘右滑 / 安卓返回 / 浏览器后退），与左上角箭头表现一致：关闭浮层回到总览
+useOverlayHistory(visible, close)
 
 // 右滑关闭：移动端没有物理返回键，向右拖动面板超过阈值即返回总览
 const dragX = ref(0)

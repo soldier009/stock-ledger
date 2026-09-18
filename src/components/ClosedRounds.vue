@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { ArrowLeft } from '@element-plus/icons-vue'
 import { usePortfolioStore } from '../stores/portfolio'
 import { fmtMoney, fmtNum, fmtPct, pnlClass } from '../utils/format'
+import { useOverlayHistory } from '../utils/useOverlayHistory'
 
 const props = defineProps({ modelValue: Boolean })
 const emit = defineEmits(['update:modelValue'])
@@ -74,6 +75,8 @@ function signed(v) {
 function close() {
   visible.value = false
 }
+// 接管系统返回手势（iOS 左边缘右滑 / 安卓返回 / 浏览器后退），与左上角箭头表现一致：关闭浮层回到总览
+useOverlayHistory(visible, close)
 
 // 右滑关闭：与净资产走势面板同款交互
 const dragX = ref(0)
