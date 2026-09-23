@@ -5,7 +5,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePortfolioStore } from '../stores/portfolio'
 import { useSettingsStore } from '../stores/settings'
 import { computeAll } from '../services/calc'
-import { fmtMoney, fmtNum, fmtPct, pnlClass, marketLabel, parseTags, typeLabel, rateOf, assetClass, assetClassLabel, ASSET_CLASSES } from '../utils/format'
+import { fmtMoney, fmtNum, fmtShares, fmtPct, pnlClass, marketLabel, parseTags, typeLabel, rateOf, assetClass, assetClassLabel, ASSET_CLASSES } from '../utils/format'
 import { DEFAULT_BROKER } from '../constants'
 import TradeForm from '../components/TradeForm.vue'
 
@@ -197,7 +197,7 @@ function syncTags(v) {
       <div class="section-title">当前持仓</div>
       <div class="row between">
         <div class="muted">持仓数量</div>
-        <div class="num">{{ fmtNum(hold.shares, 3) }} 股</div>
+        <div class="num">{{ fmtShares(hold.shares, market) }} 股</div>
       </div>
       <div class="row between">
         <div class="muted">成本价</div>
@@ -259,10 +259,10 @@ function syncTags(v) {
               分红 ¥{{ fmtNum(t.amount, 2) }}
             </template>
             <template v-else-if="t.type === 'gift'">
-              送股 {{ fmtNum(t.shares, 3) }} 股
+              送股 {{ fmtShares(t.shares, market) }} 股
             </template>
             <template v-else>
-              {{ fmtNum(t.shares, 3) }} 股 × {{ fmtNum(t.price, 3) }}
+              {{ fmtShares(t.shares, market) }} 股 × {{ fmtNum(t.price, 3) }}
               <span v-if="t.fee || t.tax">
                 （费 ¥{{ fmtNum(t.fee, 2) }} · 税 ¥{{ fmtNum(t.tax, 2) }}）
               </span>

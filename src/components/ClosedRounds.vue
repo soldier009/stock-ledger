@@ -2,7 +2,7 @@
 import { ref, computed } from 'vue'
 import { ArrowLeft } from '@element-plus/icons-vue'
 import { usePortfolioStore } from '../stores/portfolio'
-import { fmtMoney, fmtNum, fmtPct, pnlClass } from '../utils/format'
+import { fmtMoney, fmtNum, fmtShares, fmtPct, pnlClass } from '../utils/format'
 import { useOverlayHistory } from '../utils/useOverlayHistory'
 
 const props = defineProps({ modelValue: Boolean })
@@ -203,7 +203,7 @@ function onTouchEnd() {
                   <span class="cr-d-date">{{ t.date }}</span>
                 </div>
                 <div class="cr-d-mid">
-                  <span v-if="t.qty">{{ fmtNum(t.qty, 2) }} 股</span>
+                  <span v-if="t.qty">{{ fmtShares(t.qty, r.market) }} 股</span>
                   <span v-if="t.price" class="cr-d-price">@ {{ fmtNum(t.price, 2) }}</span>
                 </div>
                 <div class="cr-d-right">

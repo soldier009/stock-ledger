@@ -4,7 +4,7 @@ import * as echarts from 'echarts'
 import dayjs from 'dayjs'
 import { ArrowLeft, ArrowRight, View, Hide, Loading } from '@element-plus/icons-vue'
 import { usePortfolioStore } from '../stores/portfolio'
-import { fmtMoney, fmtNum, fmtPct, pnlClass, marketLabel, fmtTime, parseTags, assetClass, assetClassLabel } from '../utils/format'
+import { fmtMoney, fmtNum, fmtShares, fmtPct, pnlClass, marketLabel, fmtTime, parseTags, assetClass, assetClassLabel } from '../utils/format'
 import { holdingDayDetail } from '../services/calc'
 import InitPositionForm from '../components/InitPositionForm.vue'
 import NetWorthCurve from '../components/NetWorthCurve.vue'
@@ -679,7 +679,7 @@ onBeforeUnmount(() => {
           <div v-for="(it, i) in gainRows" :key="'g' + i" class="dd-item">
             <div class="dd-item-main">
               <span class="dd-name">{{ it.name }}</span>
-              <span class="dd-sub">{{ it.shares }}股</span>
+              <span class="dd-sub">{{ fmtShares(it.shares, it.market) }}股</span>
             </div>
             <div class="dd-item-side">
               <span class="dd-amt up">{{ moneyCol(it.amount) }}</span>
@@ -692,7 +692,7 @@ onBeforeUnmount(() => {
           <div v-for="(it, i) in lossRows" :key="'l' + i" class="dd-item">
             <div class="dd-item-main">
               <span class="dd-name">{{ it.name }}</span>
-              <span class="dd-sub">{{ it.shares }}股</span>
+              <span class="dd-sub">{{ fmtShares(it.shares, it.market) }}股</span>
             </div>
             <div class="dd-item-side">
               <span class="dd-amt down">{{ moneyCol(it.amount) }}</span>

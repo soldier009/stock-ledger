@@ -13,6 +13,8 @@ const portfolio = usePortfolioStore()
 const settings = useSettingsStore()
 const submitting = ref(false)
 const lookupError = ref('')
+// 查到的当前价，仅作参考展示（建仓表单要填的是历史成本价）
+const lastPrice = ref(null)
 const tagSelect = ref(null)
 
 const form = reactive({
@@ -30,6 +32,7 @@ const form = reactive({
 watch(visible, (v) => {
   if (!v) return
   lookupError.value = ''
+  lastPrice.value = null
   Object.assign(form, {
     market: 'A',
     code: '',
@@ -52,6 +55,9 @@ function syncTags(v) {
   nextTick(() => tagSelect.value?.blur?.())
 }
 
+// A股没有碎股：数量输入精度按市场切换（港股/美股保留 3 位小数）
+const sharePrecision = computed(() => (form.market === 'A' ? 0 : 3))
+
 const totalCost = computed(() => {
   const q = Number(form.shares) || 0
   const p = Number(form.costPrice) || 0
@@ -72,6 +78,7 @@ async function lookup() {
     const q = await lookupQuote(form.market, code)
     if (q) {
       if (!form.name) form.name = q.name
+      lastPrice.value = q.price
     } else if (!st) {
       lookupError.value = `未查询到代码「${code}」对应的证券，请检查代码或所选市场是否正确`
     }
@@ -160,6 +167,9 @@ async function submit() {
           <el-button @click="lookup">查询</el-button>
         </div>
         <div class="muted" style="margin-top: 4px">输入代码后自动获取名称（需联网），支持股票、场内基金(ETF/LOF)、可转债</div>
+        <div v-if="lastPrice" class="muted" style="margin-top: 4px">
+          当前价 ¥{{ fmtNum(lastPrice, 3) }}（仅供参考；历史成本价请按你的实际买入均价填写）
+        </div>
         <div v-if="lookupError" class="lookup-error">{{ lookupError }}</div>
       </el-form-item>
 
@@ -186,7 +196,7 @@ async function submit() {
 
       <div class="row gap8">
         <el-form-item label="持仓数量" class="flex1">
-          <el-input-number v-model="form.shares" :min="0" :precision="3" :controls="false" placeholder="股数" style="width: 100%" />
+          <el-input-number v-model="form.shares" :min="0" :precision="sharePrecision" :controls="false" placeholder="股数" style="width: 100%" />
         </el-form-item>
         <el-form-item label="历史成本价（元）" class="flex1">
           <el-input-number v-model="form.costPrice" :min="0" :precision="4" :controls="false" placeholder="含历史费用的买入均价" style="width: 100%" />

@@ -919,7 +919,7 @@ function signedMoney(v) {
             <span class="sd-sub">
               {{ it.code }}<template v-if="it.broker"> · {{ it.broker }}</template>
             </span>
-            <span v-if="it.type === 'sell'" class="sd-sub">卖出 {{ fmtShares(it.qty) }} 股 @ {{ it.price }}</span>
+            <span v-if="it.type === 'sell'" class="sd-sub">卖出 {{ fmtShares(it.qty, it.market) }} 股 @ {{ fmtNum(it.price, 3) }}</span>
             <span v-else class="sd-sub">分红</span>
           </div>
           <div class="sd-item-side">

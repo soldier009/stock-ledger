@@ -26,7 +26,7 @@ function goDetail() {
           <el-tag v-if="p.broker" size="small" effect="plain" type="warning">{{ p.broker }}</el-tag>
         </div>
         <div class="muted num" style="margin-top: 4px">
-          {{ p.code }} · {{ fmtShares(p.shares) }} 股
+          {{ p.code }} · {{ fmtShares(p.shares, p.market) }} 股
         </div>
         <div v-if="tags.length" class="row gap4" style="margin-top: 6px">
           <el-tag v-for="tg in tags" :key="tg" size="small" effect="light" type="info">{{ tg }}</el-tag>

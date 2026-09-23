@@ -6,6 +6,7 @@ import { usePortfolioStore } from '../stores/portfolio'
 import { useSettingsStore } from '../stores/settings'
 import { lookupQuote } from '../services/quotes'
 import { fmtNum, parseTags, marketLabel } from '../utils/format'
+import { debounce } from '../utils/debounce'
 import { DEFAULT_BROKER } from '../constants'
 
 const visible = defineModel({ type: Boolean, default: false })
@@ -165,7 +166,11 @@ function suggestTax() {
 
 watch(() => [form.type, form.market, form.shares, form.price], suggestTax)
 
-async function lookup() {
+// A股没有碎股：数量输入精度按市场切换（港股/美股保留 3 位小数）
+const sharePrecision = computed(() => (form.market === 'A' ? 0 : 3))
+
+// silent=true 用于自动补全：不弹「代码无效/网络异常」，避免用户刚敲几个字符就报错
+async function lookup(silent = false) {
   const code = String(form.code || '').trim()
   if (!code) return
   lookupError.value = ''
@@ -182,15 +187,32 @@ async function lookup() {
       if (form.type !== 'div' && form.type !== 'gift' && (!form.price || Number(form.price) === 0)) {
         form.price = q.price
       }
-    } else if (!st) {
+    } else if (!st && !silent) {
       // 行情源无此代码且本地也没有该证券主数据 → 判定为代码无效
       lookupError.value = `未查询到代码「${code}」对应的证券，请检查代码或所选市场是否正确`
     }
   } catch {
     // 网络异常：仅当本地也无此证券时才提示
-    if (!st) lookupError.value = '网络异常，行情获取失败，请稍后重试'
+    if (!st && !silent) lookupError.value = '网络异常，行情获取失败，请稍后重试'
   }
 }
+
+// 输入代码或切换市场后自动带出名称与现价（防抖，避免逐字符请求）
+const autoLookup = debounce(() => lookup(true), 600)
+watch(
+  () => [form.market, String(form.code || '').trim()],
+  () => {
+    // 编辑已有交易时沿用原成交价，不自动带出现价
+    if (!visible.value || props.trade) return
+    autoLookup()
+  }
+)
+
+// 打开表单时标的已确定（如从证券详情页「记一笔」带入），立即取一次现价填进价格栏
+watch(visible, (v) => {
+  if (!v || props.trade) return
+  if (String(form.code || '').trim()) lookup(true)
+})
 
 async function submit() {
   if (!form.date) return ElMessage.warning('请选择日期')
@@ -292,7 +314,7 @@ function reset() {
           <el-input
             v-model="form.code"
             placeholder="股票:600519 / ETF:510300 / 转债:113050 / 港股:00700 / 美股:AAPL"
-            @blur="lookup"
+            @blur="() => lookup()"
           />
           <el-button @click="lookup">查询</el-button>
         </div>
@@ -334,7 +356,7 @@ function reset() {
       <template v-if="form.type !== 'div' && form.type !== 'gift'">
         <div class="row gap8">
           <el-form-item label="数量" class="flex1">
-            <el-input-number v-model="form.shares" :min="0" :precision="3" :controls="false" placeholder="股数" style="width: 100%" />
+            <el-input-number v-model="form.shares" :min="0" :precision="sharePrecision" :controls="false" placeholder="股数" style="width: 100%" />
           </el-form-item>
           <el-form-item label="价格" class="flex1">
             <el-input-number v-model="form.price" :min="0" :precision="4" :controls="false" placeholder="成交价" style="width: 100%" />
@@ -344,7 +366,7 @@ function reset() {
 
       <template v-if="form.type === 'gift'">
         <el-form-item label="送股数量">
-          <el-input-number v-model="form.shares" :min="0" :precision="3" :controls="false" style="width: 100%" />
+          <el-input-number v-model="form.shares" :min="0" :precision="sharePrecision" :controls="false" style="width: 100%" />
         </el-form-item>
       </template>
 

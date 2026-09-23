@@ -1,7 +1,7 @@
 import * as XLSX from 'xlsx'
 import jsPDF from 'jspdf'
 import dayjs from 'dayjs'
-import { fmtMoney, fmtNum, fmtShares, fmtPct, typeLabel, marketLabel } from '../utils/format'
+import { fmtMoney, fmtNum, fmtShares, shareValue, fmtPct, typeLabel, marketLabel } from '../utils/format'
 
 /** 组装导出数据 */
 export function buildReportData(store) {
@@ -9,7 +9,7 @@ export function buildReportData(store) {
     名称: p.name || p.code,
     代码: p.code,
     市场: marketLabel(p.market),
-    持仓数量: p.shares,
+    持仓数量: shareValue(p.shares, p.market),
     成本价: p.avgCost,
     现价: p.quote ? p.quote.price : null,
     市值_CNY: p.mvCny,
@@ -23,7 +23,7 @@ export function buildReportData(store) {
     代码: t.code,
     名称: t.name,
     类型: typeLabel(t.type),
-    数量: t.shares || null,
+    数量: shareValue(t.shares, t.market),
     价格: t.price || null,
     金额: t.type === 'div' ? t.amount : (t.type === 'gift' ? null : Number(t.price) * Number(t.shares)),
     费用: t.fee || null,
@@ -173,7 +173,7 @@ export function exportPdf(data) {
     renderTableToPdf(doc, {
       title: '当前持仓',
       subtitle: summaryText,
-      columns: ['名称', '代码', '市场', '持仓量', '成本价', '现价', '市值(¥)', '浮动盈亏(¥)', '盈亏%'],
+      columns: ['名称', '代码', '市场', '持仓数量', '成本价', '现价', '市值(¥)', '浮动盈亏(¥)', '盈亏%'],
       rows: data.positions,
       weights: [10, 7, 5, 7, 7, 7, 9, 10, 7]
     })

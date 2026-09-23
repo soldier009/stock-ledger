@@ -3,7 +3,7 @@ import { ref, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { usePortfolioStore } from '../stores/portfolio'
-import { fmtNum, typeLabel, marketLabel } from '../utils/format'
+import { fmtNum, fmtShares, typeLabel, marketLabel } from '../utils/format'
 import TradeForm from '../components/TradeForm.vue'
 import CashForm from '../components/CashForm.vue'
 
@@ -138,10 +138,10 @@ async function delCash(c) {
                 分红 ¥{{ fmtNum(t.amount, 2) }}
               </template>
               <template v-else-if="t.type === 'gift'">
-                送股 {{ fmtNum(t.shares, 3) }} 股
+                送股 {{ fmtShares(t.shares, t.market) }} 股
               </template>
               <template v-else>
-                {{ t.code }} · {{ fmtNum(t.shares, 3) }} 股 × {{ fmtNum(t.price, 3) }}
+                {{ t.code }} · {{ fmtShares(t.shares, t.market) }} 股 × {{ fmtNum(t.price, 3) }}
                 <span v-if="t.fee || t.tax" class="muted">
                   （费 ¥{{ fmtNum(t.fee, 2) }} · 税 ¥{{ fmtNum(t.tax, 2) }}）
                 </span>

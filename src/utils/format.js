@@ -26,10 +26,23 @@ export function fmtNum(v, digits = 2) {
   })
 }
 
-export function fmtShares(v) {
+/**
+ * 股数格式化：A股没有碎股，按整数显示；港股/美股可能有碎股，最多 3 位小数
+ * @param {number|string} v
+ * @param {string} [market] 'A' | 'HK' | 'US'，缺省按有碎股处理
+ */
+export function fmtShares(v, market) {
   if (v === null || v === undefined || Number.isNaN(Number(v))) return '—'
   const n = Number(v)
-  return n.toLocaleString('zh-CN', { maximumFractionDigits: 3 })
+  const digits = market === 'A' ? 0 : 3
+  return n.toLocaleString('zh-CN', { maximumFractionDigits: digits })
+}
+
+/** 股数取值（导出等需要数值而非文本的场景）：A股取整，其他市场保留原值 */
+export function shareValue(v, market) {
+  const n = Number(v)
+  if (v === null || v === undefined || Number.isNaN(n)) return null
+  return market === 'A' ? Math.round(n) : n
 }
 
 export function fmtPct(v, digits = 2) {
