@@ -50,6 +50,12 @@ const inflow = computed(() =>
 const outflow = computed(() =>
   portfolio.cashFlows.filter((c) => c.type === 'withdraw').reduce((a, c) => a + Number(c.amount || 0), 0)
 )
+// 累计入金中属于「补录建仓」自动生成的部分：虚拟入金，不是手动转进来的钱
+const initialInflow = computed(() =>
+  portfolio.cashFlows
+    .filter((c) => c.type === 'deposit' && c.origin === 'initial')
+    .reduce((a, c) => a + Number(c.amount || 0), 0)
+)
 
 // 持仓明细按标签分组（同一标签放一起），无标签归入「未分类」
 const groups = computed(() => {
@@ -168,6 +174,9 @@ async function onRefresh() {
       <div class="row between">
         <div class="muted">累计入金 <span class="num up">+{{ fmtNum(inflow, 2) }}</span></div>
         <div class="muted">累计出金 <span class="num down">-{{ fmtNum(outflow, 2) }}</span></div>
+      </div>
+      <div v-if="initialInflow > 0" class="muted" style="font-size: 11px; margin-top: 6px">
+        累计入金包含补录建仓 {{ fmtMoney(initialInflow, 0) }}（补录历史持仓时自动生成，非手动转入）
       </div>
     </div>
 

@@ -110,6 +110,23 @@ function baseOption() {
     grid: { left: 56, right: 16, top: 12, bottom: 24 },
     tooltip: {
       trigger: 'axis',
+      // confine + 自定义 position：弹窗固定在触点上方居中，靠左/右边缘时自动收进容器，
+      // 顶部放不下时改到触点下方，避免入金 pin 弹出的提示被屏幕边缘裁掉
+      confine: true,
+      extraCssText: 'max-width: 92%; white-space: normal; border-radius: 8px;',
+      position(point, params, dom, rect, size) {
+        const [viewW, viewH] = size.viewSize
+        const [w, h] = size.contentSize
+        // 横向：以触点为中心，靠边时收进容器内
+        let x = point[0] - w / 2
+        x = Math.max(4, Math.min(x, Math.max(4, viewW - w - 4)))
+        // 纵向：优先放触点上方，上方放不下改下方，两边都放不下（内容高）就贴容器顶部，
+        // 并始终把整块弹窗夹在容器内，避免入金标记多、弹窗变高时顶部被裁
+        let y = point[1] - h - 14
+        if (y < 4) y = point[1] + 14
+        if (y + h > viewH - 4) y = Math.max(4, viewH - h - 4)
+        return [x, y]
+      },
       valueFormatter: (v) => '¥' + fmtNum(v, 0)
     },
     xAxis: {
@@ -191,11 +208,14 @@ function netFlow(flows) {
 
 // 「投资收益」与「资金进出」按两个独立口径统计（累计值，不随上方区间切换变化）：
 //   投资收益 = 买卖盈亏的全部金额总和 = 已实现盈亏（卖出） + 现金分红 + 当前持仓浮动盈亏
-//   资金进出 = 各股票建仓成本合计（买入/配股，含费用） + 入金合计 − 出金合计
+//   资金进出 = 本金 = 入金合计 − 出金合计（与资产页「累计入金」、总盈亏率同源）
 // 注1：totalRealized 已包含现金分红（calc.js 中分红到账即计入），这里把分红单列出来展示，
 //      「已实现」一行显示的是纯买卖盈亏
-// 注2：初始建仓会自动生成一笔等额入金，这里只计建仓成本，不再重复计入那笔自动入金，
-//     否则本金会被算两遍（这也是之前把建仓金额当成收益的根源）
+// 注2：本金按「资金来源」拆成互不重叠的两块：补录建仓（虚拟入金）+ 手动入金 − 出金。
+//     App 内买入花的钱来自手动入金的现金，只是「现金 → 持仓」的形态转换、净资产不变，
+//     不能再单列一次，否则本金被算两遍（此前「建仓成本 + 入金 − 出金」就是这么虚高的，
+//     也导致「占本金」收益率被稀释）
+// 注3：补录历史持仓（初始建仓）会自动生成等额入金，属于本金的一部分，单列为「补录建仓」
 const capitalBreakdown = computed(() => {
   const realized = Number(portfolio.totals?.totalRealized) || 0
   const floating = Number(portfolio.totals?.floating) || 0
@@ -204,31 +224,29 @@ const capitalBreakdown = computed(() => {
     if (e.type === 'div') dividend += Number(e.amount) || 0
   }
   const tradeRealized = realized - dividend // 纯买卖带来的已实现盈亏
-  let buyCost = 0
-  for (const t of portfolio.trades) {
-    if (t.type !== 'buy' && t.type !== 'rights') continue
-    buyCost +=
-      (Number(t.price) || 0) * (Number(t.shares) || 0) + (Number(t.fee) || 0) + (Number(t.tax) || 0)
-  }
+  // 本金的两块来源互不重叠，保证「补录建仓 + 入金 − 出金 = 本金」恒成立：
+  //   补录建仓 = 补录历史持仓时自动生成的入金（虚拟入金，不占用手动入金的现金）
+  //   入金     = 资金账户里手动记录的入金；App 内买入花的钱出自这里，故不再单列买入成本
+  let initialCost = 0
   let deposit = 0
   let withdraw = 0
   for (const c of portfolio.cashFlows) {
     const amt = Number(c.amount) || 0
     if (c.type === 'deposit') {
-      if (c.origin !== 'initial') deposit += amt // 初始建仓的自动入金 = 建仓成本，已计入 buyCost
-    } else if (c.type === 'withdraw') {
-      withdraw += amt
-    }
+      if (c.origin === 'initial') initialCost += amt
+      else deposit += amt
+    } else if (c.type === 'withdraw') withdraw += amt
   }
   const invest = realized + floating
-  const flow = buyCost + deposit - withdraw
+  // 本金 = 入金 − 出金：与 store 的 totals.principal、资产页「累计入金」同源
+  const flow = Number(portfolio.totals?.principal) || deposit - withdraw
   return {
     invest,
     realized: tradeRealized,
     dividend,
     floating,
     flow,
-    buyCost,
+    initialCost,
     deposit,
     withdraw,
     roi: flow ? (invest / flow) * 100 : 0
@@ -266,16 +284,27 @@ function drawDay() {
         const p = params && params[0]
         const r = p ? rows[p.dataIndex] : null
         if (!r) return ''
+        // 现金与持仓市值拆成两行：单行太长会让弹窗过宽，在屏幕中间也会被裁掉半截
         const lines = [
           `净资产：¥${fmtNum(r.v, 0)}`,
-          `　现金：¥${fmtNum(r.cash, 0)}　持仓市值：¥${fmtNum(r.mv, 0)}`
+          `现金：¥${fmtNum(r.cash, 0)}`,
+          `持仓市值：¥${fmtNum(r.mv, 0)}`
         ]
-        for (const f of r.flows) {
+        // 当天出入金笔数多时只列前 3 笔、其余汇总：笔数一多弹窗会高到顶出图表
+        const flows = r.flows || []
+        for (const f of flows.slice(0, 3)) {
           lines.push((f.type === 'deposit' ? '入金 +' : '出金 -') + fmtMoney(f.amount, 0))
         }
-        for (const n of r.initials) {
+        if (flows.length > 3) {
+          const rest = flows.slice(3).reduce((a, f) => a + (f.type === 'deposit' ? Number(f.amount) : -Number(f.amount)), 0)
+          lines.push(`其余 ${flows.length - 3} 笔合计 ${rest >= 0 ? '+' : '-'}${fmtMoney(Math.abs(rest), 0)}`)
+        }
+        // 补录的历史持仓可能一次补很多只，同样只列前 2 条、其余汇总，避免弹窗过高
+        const initials = r.initials || []
+        for (const n of initials.slice(0, 2)) {
           lines.push('初始建仓并入起点' + (n.kind === 'initial' ? '：' + fmtMoney(n.amount, 0) : '：' + n.label))
         }
+        if (initials.length > 2) lines.push(`其余 ${initials.length - 2} 笔初始建仓已并入起点`)
         return `<b>${r.date}</b>` + lines.map((s) => `<div>${s}</div>`).join('')
       }
     },
@@ -644,9 +673,9 @@ onBeforeUnmount(() => {
               <el-icon :size="18"><Wallet /></el-icon>
             </div>
             <div class="nw-bd-label">
-              资金进出
+              资金进出（本金）
               <div class="nw-bd-sub">
-                建仓成本 {{ fmtMoney(capitalBreakdown.buyCost, 0) }} · 入金 {{ fmtMoney(capitalBreakdown.deposit, 0) }}
+                补录建仓 {{ fmtMoney(capitalBreakdown.initialCost, 0) }} · 入金 {{ fmtMoney(capitalBreakdown.deposit, 0) }}
               </div>
             </div>
             <div class="nw-bd-right">
@@ -654,7 +683,7 @@ onBeforeUnmount(() => {
               <div class="nw-bd-pct">出金 {{ fmtMoney(capitalBreakdown.withdraw, 0) }}</div>
             </div>
           </div>
-          <div class="nw-bd-note">投资收益 = 买卖已实现盈亏 + 现金分红 + 持仓浮动盈亏；资金进出 = 建仓成本 + 入金 − 出金</div>
+          <div class="nw-bd-note">投资收益 = 买卖已实现盈亏 + 现金分红 + 持仓浮动盈亏；资金进出（本金）= 补录建仓 + 入金 − 出金，App 内买入花的钱来自手动入金的现金，已含在入金中、不重复计入</div>
         </div>
       </div>
     </div>
