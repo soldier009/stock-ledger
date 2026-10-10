@@ -40,6 +40,7 @@ const form = reactive({
   amount: null,
   note: '',
   tag: [],
+  purpose: '',
   broker: ''
 })
 
@@ -64,6 +65,7 @@ watch(visible, (v) => {
       amount: t.amount || null,
       note: t.note || '',
       tag: st ? parseTags(st.tag) : [],
+      purpose: st ? st.purpose || '' : '',
       broker: t.broker || (st && st.broker) || defaultBroker()
     })
   } else {
@@ -82,6 +84,7 @@ watch(visible, (v) => {
         amount: null,
         note: '',
         tag: Array.isArray(props.preset.tag) ? [...props.preset.tag] : [],
+        purpose: props.preset.purpose || '',
         broker: props.preset.broker || defaultBroker()
       })
     } else {
@@ -110,13 +113,24 @@ async function openAddBroker() {
   }
 }
 
+// 资产类别标签为单选：底层仍按数组存储（兼容历史数据），这里做单值桥接
+const tagValue = computed({
+  get: () => (Array.isArray(form.tag) && form.tag.length ? form.tag[0] : ''),
+  set: (v) => {
+    form.tag = v ? [v] : []
+  }
+})
+
 // 选择下拉中新建的标签时，立即并入标签组（无需等待表单提交）
 function syncTags(v) {
-  const arr = Array.isArray(v) ? v : []
-  const fresh = arr.filter((x) => x && !settings.tags.includes(x))
-  if (fresh.length) settings.saveTags([...settings.tags, ...fresh])
+  if (v && !settings.tags.includes(v)) settings.saveTags([...settings.tags, v])
   // 选中后自动收起下拉，避免面板一直展开
   nextTick(() => tagSelect.value?.blur?.())
+}
+
+// 用途标签同样是单选，新建的值并入用途标签组
+function syncPurposes(v) {
+  if (v && !settings.purposes.includes(v)) settings.savePurposes([...settings.purposes, v])
 }
 
 const typeOptions = [
@@ -242,6 +256,7 @@ async function submit() {
       amount: t === 'div' ? Number(form.amount) || 0 : 0,
       note: form.note.trim(),
       tag: Array.isArray(form.tag) ? [...form.tag] : [],
+      purpose: form.purpose || '',
       broker: form.broker || defaultBroker()
     }
     if (props.trade) {
@@ -277,6 +292,7 @@ function reset() {
     amount: null,
     note: '',
     tag: [],
+    purpose: '',
     broker: defaultBroker()
   })
 }
@@ -336,13 +352,13 @@ function reset() {
         <div class="muted" style="margin-top: 4px">买卖资金只在该券商账户内流动（可在设置中管理券商）</div>
       </el-form-item>
 
-      <el-form-item v-if="!locked" label="标签（可多选，用于持仓分类）">
+      <el-form-item v-if="!locked" label="资产类别（单选，用于持仓分类）">
         <el-select
           ref="tagSelect"
-          v-model="form.tag"
-          multiple
+          v-model="tagValue"
           filterable
           allow-create
+          clearable
           default-first-option
           :reserve-keyword="false"
           placeholder="选择或输入新标签后回车"
@@ -351,6 +367,23 @@ function reset() {
         >
           <el-option v-for="tg in settings.tags" :key="tg" :label="tg" :value="tg" />
         </el-select>
+      </el-form-item>
+
+      <el-form-item v-if="!locked" label="用途">
+        <el-select
+          v-model="form.purpose"
+          filterable
+          allow-create
+          clearable
+          default-first-option
+          :reserve-keyword="false"
+          placeholder="未设置"
+          style="width: 100%"
+          @change="syncPurposes"
+        >
+          <el-option v-for="pp in settings.purposes" :key="pp" :label="pp" :value="pp" />
+        </el-select>
+        <div class="muted" style="margin-top: 4px">每只股票只能选一个用途，如长期持有 / 打新 / 波段</div>
       </el-form-item>
 
       <template v-if="form.type !== 'div' && form.type !== 'gift'">

@@ -20,6 +20,8 @@ const code = String(route.params.code || '')
 const stock = computed(() => portfolio.stocks.find((s) => s.market === market && s.code === code))
 const name = computed(() => stock.value?.name || portfolio.trades.find((t) => t.market === market && t.code === code)?.name || code)
 const tags = computed(() => parseTags(stock.value?.tag))
+// 用途标签：与资产类别并列的第二个维度，单值字符串，空表示未设置
+const purposeText = computed(() => String(stock.value?.purpose || ''))
 const broker = computed(() => stock.value?.broker || portfolio.defaultBroker || DEFAULT_BROKER)
 // 资产二级分类：人工标注优先，未标注时按代码自动推断
 const assetTypeValue = computed(() => assetClass(market, code, stock.value?.asset_type))
@@ -60,7 +62,7 @@ const presetTrade = ref(null)
 function openAdd() {
   editingTrade.value = null
   // 预填股票的所属券商，新增记录时资金默认流入该券商，无需每次手动选择
-  presetTrade.value = { market, code, name: name.value, tag: tags.value, broker: broker.value }
+  presetTrade.value = { market, code, name: name.value, tag: tags.value, broker: broker.value, purpose: stock.value?.purpose || '' }
   tradeVisible.value = true
 }
 
@@ -70,8 +72,16 @@ function openEdit(t) {
   tradeVisible.value = true
 }
 
-const infoForm = reactive({ name: '', tag: [], note: '', broker: '', assetType: '' })
+const infoForm = reactive({ name: '', tag: [], note: '', broker: '', assetType: '', purpose: '' })
 const tagSelect = ref(null)
+
+// 资产类别标签为单选：底层仍按数组存储（兼容历史数据），这里做单值桥接
+const tagValue = computed({
+  get: () => (Array.isArray(infoForm.tag) && infoForm.tag.length ? infoForm.tag[0] : ''),
+  set: (v) => {
+    infoForm.tag = v ? [v] : []
+  }
+})
 
 function openInfoEdit() {
   infoForm.name = stock.value?.name || ''
@@ -79,6 +89,7 @@ function openInfoEdit() {
   infoForm.note = stock.value?.note || ''
   infoForm.broker = broker.value
   infoForm.assetType = stock.value?.asset_type || ''
+  infoForm.purpose = stock.value?.purpose || ''
   editVisible.value = true
 }
 
@@ -107,7 +118,8 @@ async function saveInfo() {
       tag: [...infoForm.tag],
       note: infoForm.note.trim(),
       broker: newBroker,
-      assetType: infoForm.assetType
+      assetType: infoForm.assetType,
+      purpose: infoForm.purpose || ''
     },
     syncTrades
   )
@@ -152,11 +164,14 @@ function typeClass(t) {
 
 // 选择下拉中新建的标签时，立即并入标签组
 function syncTags(v) {
-  const arr = Array.isArray(v) ? v : []
-  const fresh = arr.filter((x) => x && !settings.tags.includes(x))
-  if (fresh.length) settings.saveTags([...settings.tags, ...fresh])
+  if (v && !settings.tags.includes(v)) settings.saveTags([...settings.tags, v])
   // 选中后自动收起下拉，避免面板一直展开
   nextTick(() => tagSelect.value?.blur?.())
+}
+
+// 用途标签同样是单选，新建的值并入用途标签组
+function syncPurposes(v) {
+  if (v && !settings.purposes.includes(v)) settings.savePurposes([...settings.purposes, v])
 }
 </script>
 
@@ -188,6 +203,8 @@ function syncTags(v) {
         <el-tag size="small" effect="plain" type="warning">{{ broker }}</el-tag>
         <el-tag v-for="tg in tags" :key="tg" size="small" effect="light" type="info">{{ tg }}</el-tag>
         <span v-if="!tags.length" class="muted">未设置标签</span>
+        <el-tag v-if="purposeText" size="small" effect="plain" type="primary">{{ purposeText }}</el-tag>
+        <span v-else class="muted">用途未设置</span>
       </div>
       <div v-if="stock?.note" class="muted note-text">{{ stock.note }}</div>
     </div>
@@ -303,13 +320,13 @@ function syncTags(v) {
           用于资产分布归类。A股按代码可自动区分股票/场内基金/可转债，港股美股 ETF 建议手动指定
         </div>
       </el-form-item>
-      <el-form-item label="标签（可多选，用于持仓分类）">
+      <el-form-item label="资产类别（单选，用于持仓分类）">
         <el-select
           ref="tagSelect"
-          v-model="infoForm.tag"
-          multiple
+          v-model="tagValue"
           filterable
           allow-create
+          clearable
           default-first-option
           :reserve-keyword="false"
           placeholder="选择或输入新标签后回车"
@@ -318,6 +335,22 @@ function syncTags(v) {
         >
           <el-option v-for="tg in settings.tags" :key="tg" :label="tg" :value="tg" />
         </el-select>
+      </el-form-item>
+      <el-form-item label="用途">
+        <el-select
+          v-model="infoForm.purpose"
+          filterable
+          allow-create
+          clearable
+          default-first-option
+          :reserve-keyword="false"
+          placeholder="未设置"
+          style="width: 100%"
+          @change="syncPurposes"
+        >
+          <el-option v-for="pp in settings.purposes" :key="pp" :label="pp" :value="pp" />
+        </el-select>
+        <div class="muted" style="margin-top: 4px">每只股票只能选一个用途，如长期持有 / 打新 / 波段</div>
       </el-form-item>
       <el-form-item label="备注">
         <el-input v-model="infoForm.note" type="textarea" :rows="2" placeholder="可选" />

@@ -1,23 +1,23 @@
 <script setup>
-import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
-import * as echarts from 'echarts'
+import { ref, computed, watch, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { ArrowLeft, ArrowRight, View, Hide, Loading } from '@element-plus/icons-vue'
 import { usePortfolioStore } from '../stores/portfolio'
-import { fmtMoney, fmtNum, fmtShares, fmtPct, pnlClass, marketLabel, fmtTime, parseTags, assetClass, assetClassLabel } from '../utils/format'
+import { fmtMoney, fmtNum, fmtShares, fmtPct, pnlClass, marketLabel, fmtTime, assetClass, assetClassLabel } from '../utils/format'
 import { holdingDayDetail } from '../services/calc'
+import { groupBy, PALETTE, CASH_COLOR } from '../utils/composition'
 import InitPositionForm from '../components/InitPositionForm.vue'
 import NetWorthCurve from '../components/NetWorthCurve.vue'
 import ClosedRounds from '../components/ClosedRounds.vue'
+import DonutChart from '../components/DonutChart.vue'
 
 const portfolio = usePortfolioStore()
+const router = useRouter()
 const showInit = ref(false)
 const showCurve = ref(false)
 const showClosed = ref(false)
 const showMoney = ref(true)
-const pieRef = ref(null)
-let pieChart = null
-const PALETTE = ['#dc2626', '#3b82f6', '#f59e0b', '#10b981', '#8b5cf6', '#14b8a6', '#f97316', '#64748b']
 
 const latest = computed(() => {
   const s = portfolio.netValue
@@ -47,23 +47,6 @@ const totalAllocation = computed(() => allocation.value.reduce((a, b) => a + b.v
 
 // 当前持仓成本（与资产页口径一致）
 const totalCost = computed(() => portfolio.positions.reduce((a, p) => a + p.avgCost * p.shares * p.rate, 0))
-
-// 持仓分布：按标签 / 按个股
-const pieMode = ref('tag')
-const pieData = computed(() => {
-  if (pieMode.value === 'tag') {
-    const groups = {}
-    for (const p of portfolio.positions) {
-      const tags = parseTags(p.tag)
-      const key = tags.length ? tags[0] : '未分类'
-      groups[key] = (groups[key] || 0) + p.mvCny
-    }
-    return Object.entries(groups)
-      .map(([name, value]) => ({ name, value: Math.round(value * 100) / 100 }))
-      .sort((a, b) => b.value - a.value)
-  }
-  return portfolio.positions.map((p) => ({ name: p.name || p.code, value: Math.round(p.mvCny * 100) / 100 }))
-})
 
 // ===== 资产分布：第一级「市场」，第二级「资产类型」 =====
 const assetMode = ref('total') // 'total' 或市场代码 A / HK / US
@@ -280,45 +263,47 @@ function pctCol(v) {
   return `${v > 0 ? '+' : ''}${fmtPct(v)}`
 }
 
-// 持仓分布（按标签 / 按个股）
-function drawPie() {
-  if (!pieRef.value) return
-  if (!pieChart) pieChart = echarts.init(pieRef.value)
-  const data = pieData.value
-  const total = data.reduce((a, b) => a + b.value, 0)
-  if (!data.length) { pieChart.clear(); return }
-  pieChart.setOption({
-    tooltip: { trigger: 'item', formatter: (p) => `${p.name}<br/>¥${fmtNum(p.value, 0)}（${p.percent}%）` },
-    graphic: [
-      { type: 'text', left: 'center', top: '42%', style: { text: '持仓市值', textAlign: 'center', fill: '#94a3b8', fontSize: 12 } },
-      { type: 'text', left: 'center', top: '48%', style: { text: '¥' + fmtNum(total, 0), textAlign: 'center', fill: '#1f2937', fontSize: 18, fontWeight: 700 } }
-    ],
-    series: [{
-      type: 'pie', radius: ['42%', '68%'], center: ['50%', '50%'],
-      itemStyle: { borderRadius: 6, borderColor: '#fff', borderWidth: 2 },
-      label: { color: '#334155', fontSize: 11, formatter: '{b}\n{d}%' },
-      color: PALETTE, data
-    }]
-  })
-}
+// ===== 资产构成：按资产类别（标签）分组，含现金，点进详情页 =====
+const compGroups = computed(() => groupBy(portfolio.positions, 'tag'))
+const compCash = computed(() => Number(portfolio.totals?.cash) || 0)
+const compTotal = computed(() => Number(portfolio.totals?.totalAssets) || 0)
 
-watch(
-  [() => portfolio.positions.map((p) => Math.round(p.mvCny)).join(','), pieMode],
-  async () => { await nextTick(); drawPie() }
-)
-
-function onResize() { pieChart && pieChart.resize() }
-
-onMounted(() => {
-  nextTick().then(() => { drawPie() })
-  window.addEventListener('resize', onResize)
-  // 进入总览时确保持仓行情日历数据最新（幂等，每日最多拉取一次）
-  portfolio.syncKlines()
+// 扇区：取占比前 5 个标签，其余合并为「其他 N 个标签」，现金单独一块
+const compSlices = computed(() => {
+  const g = compGroups.value
+  const items = g.slice(0, 5).map((x, i) => ({ name: x.name, value: x.value, color: PALETTE[i % PALETTE.length] }))
+  const rest = g.slice(5)
+  if (rest.length) {
+    items.push({
+      name: `其他 ${rest.length} 个标签`,
+      value: rest.reduce((a, b) => a + b.value, 0),
+      color: '#94a3b8'
+    })
+  }
+  if (compCash.value > 0) items.push({ name: '现金', value: compCash.value, color: CASH_COLOR })
+  return items
 })
 
-onBeforeUnmount(() => {
-  window.removeEventListener('resize', onResize)
-  pieChart && pieChart.dispose()
+// 列表：展示前 3 个标签，其余折叠为「其他 N 个标签」
+const compRows = computed(() => {
+  const g = compGroups.value
+  const top = g.slice(0, 3)
+  const rest = g.slice(3)
+  const rows = top.map((x, i) => ({ name: x.name, value: x.value, color: PALETTE[i % PALETTE.length] }))
+  if (rest.length) {
+    rows.push({ name: `其他 ${rest.length} 个标签`, value: rest.reduce((a, b) => a + b.value, 0), color: '#94a3b8' })
+  }
+  return rows
+})
+
+function compPct(v) {
+  if (!(compTotal.value > 0)) return '0.0'
+  return (((Number(v) || 0) / compTotal.value) * 100).toFixed(1)
+}
+
+onMounted(() => {
+  // 进入总览时确保持仓行情日历数据最新（幂等，每日最多拉取一次）
+  portfolio.syncKlines()
 })
 </script>
 
@@ -480,17 +465,31 @@ onBeforeUnmount(() => {
       <div v-else class="muted" style="text-align: center; padding: 20px">暂无持仓数据</div>
     </div>
 
-    <!-- 持仓分布 -->
-    <div class="card">
-      <div class="row between" style="margin-bottom: 12px">
-        <div class="section-title">持仓分布</div>
-        <div class="pie-switch">
-          <span :class="{ active: pieMode === 'tag' }" @click="pieMode = 'tag'">按标签</span>
-          <span :class="{ active: pieMode === 'stock' }" @click="pieMode = 'stock'">按个股</span>
+    <!-- 资产构成 -->
+    <div class="card" @click="router.push('/composition')">
+      <div class="row between" style="margin-bottom: 10px">
+        <div class="section-title">资产构成 <span class="comp-dim">· 资产类别</span></div>
+        <el-icon class="comp-arrow"><ArrowRight /></el-icon>
+      </div>
+      <div class="comp-body">
+        <DonutChart
+          :items="compSlices"
+          center-label="总资产"
+          :center-value="fmtMoney(compTotal, 0)"
+          :center-font-size="15"
+          :radius="['54%', '78%']"
+          height="140px"
+        />
+        <div class="comp-list">
+          <div v-for="r in compRows" :key="r.name" class="distribution-item">
+            <div class="item-dot" :style="{ backgroundColor: r.color }"></div>
+            <div class="item-name">{{ r.name }}</div>
+            <div class="item-percentage">{{ compPct(r.value) }}%</div>
+            <div class="item-amount">{{ fmtMoney(r.value, 0) }}</div>
+          </div>
+          <div v-if="!compRows.length" class="muted">暂无持仓数据</div>
         </div>
       </div>
-      <div ref="pieRef" class="pie-chart"></div>
-      <div v-if="!portfolio.positions.length" class="muted" style="text-align: center; padding: 20px">暂无持仓数据</div>
     </div>
 
     <!-- 当日持仓盈亏日历 -->
@@ -769,9 +768,6 @@ onBeforeUnmount(() => {
 }
 .closed-entry-right .down {
   color: #10b981;
-}
-.pie-chart {
-  height: 260px;
 }
 .metrics {
   padding-top: 16px;
@@ -1175,5 +1171,32 @@ onBeforeUnmount(() => {
   text-align: right;
   font-size: 13px;
   font-weight: 600;
+}
+
+/* ===== 资产构成入口 ===== */
+.comp-body {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.comp-body > :first-child {
+  width: 140px;
+  flex: 0 0 140px;
+}
+.comp-list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.comp-dim {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-2, #64748b);
+}
+.comp-arrow {
+  color: #cbd5e1;
+  font-size: 14px;
 }
 </style>

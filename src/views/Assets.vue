@@ -62,15 +62,14 @@ const groups = computed(() => {
   const map = new Map()
   const uncat = []
   for (const p of portfolio.positions) {
-    const tags = parseTags(p.tag)
-    if (!tags.length) {
+    // 资产类别标签是单选：只取第一个，避免同一持仓被计入多个分组、各分组市值之和大于总市值
+    const t = parseTags(p.tag)[0] || ''
+    if (!t) {
       uncat.push(p)
       continue
     }
-    for (const t of tags) {
-      if (!map.has(t)) map.set(t, [])
-      map.get(t).push(p)
-    }
+    if (!map.has(t)) map.set(t, [])
+    map.get(t).push(p)
   }
   const summarize = (items) => {
     const mv = items.reduce((a, p) => a + (p.mvCny || 0), 0)

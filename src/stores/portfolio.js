@@ -211,6 +211,8 @@ export const usePortfolioStore = defineStore('portfolio', {
           note: st ? st.note : '',
           // 资产二级分类的人工标注（空字符串表示按代码自动推断）
           assetType: st && st.asset_type ? st.asset_type : '',
+          // 用途标签：与资产类别标签并列的第二个维度，单值字符串，空表示未设置
+          purpose: st && st.purpose ? st.purpose : '',
           broker: st && st.broker ? st.broker : this.defaultBroker,
           quote: q,
           price,
@@ -548,14 +550,16 @@ export const usePortfolioStore = defineStore('portfolio', {
         if (Array.isArray(t.tag) && t.tag.length) {
           run('UPDATE stocks SET tag = ? WHERE id = ?', [JSON.stringify(t.tag), exist.id])
         }
+        if (t.purpose) run('UPDATE stocks SET purpose = ? WHERE id = ?', [t.purpose, exist.id])
       } else {
-        run('INSERT INTO stocks (market, code, name, tag, note, broker) VALUES (?,?,?,?,?,?)', [
+        run('INSERT INTO stocks (market, code, name, tag, note, broker, purpose) VALUES (?,?,?,?,?,?,?)', [
           t.market,
           t.code,
           t.name || '',
           JSON.stringify(Array.isArray(t.tag) ? t.tag : []),
           '',
-          broker
+          broker,
+          t.purpose || ''
         ])
       }
       await this.loadData()
@@ -567,13 +571,14 @@ export const usePortfolioStore = defineStore('portfolio', {
     // 初始建仓：录入使用本软件之前已持有的股票
     // 与「记录买入」的区别：同时自动生成一笔等额入金记录，
     // 使现金不变、本金增加，净资产/总盈亏/收益率均正确（等价于当初用这笔钱买入）
-    async addInitialPosition({ date, market, code, name, shares, costPrice, broker, note, tag }) {
+    async addInitialPosition({ date, market, code, name, shares, costPrice, broker, note, tag, purpose }) {
       const qty = Number(shares) || 0
       const price = Number(costPrice) || 0
       const cost = Math.round(qty * price * 100) / 100
       const b = broker || this.defaultBroker
       const tagArr = Array.isArray(tag) ? tag.filter(Boolean) : []
       const tagStr = JSON.stringify(tagArr)
+      const purposeStr = String(purpose || '')
       run(
         'INSERT INTO trades (date, market, code, name, type, shares, price, fee, tax, amount, note, broker, origin) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
         [date, market, code, name || '', 'buy', qty, price, 0, 0, 0, note || '', b, 'initial']
@@ -591,14 +596,16 @@ export const usePortfolioStore = defineStore('portfolio', {
         if (name) run('UPDATE stocks SET name = ? WHERE id = ?', [name, exist.id])
         if (b) run('UPDATE stocks SET broker = ? WHERE id = ?', [b, exist.id])
         if (tagArr.length) run('UPDATE stocks SET tag = ? WHERE id = ?', [tagStr, exist.id])
+        if (purposeStr) run('UPDATE stocks SET purpose = ? WHERE id = ?', [purposeStr, exist.id])
       } else {
-        run('INSERT INTO stocks (market, code, name, tag, note, broker) VALUES (?,?,?,?,?,?)', [
+        run('INSERT INTO stocks (market, code, name, tag, note, broker, purpose) VALUES (?,?,?,?,?,?,?)', [
           market,
           code,
           name || '',
           tagStr,
           '',
-          b
+          b,
+          purposeStr
         ])
       }
       await this.loadData()
@@ -653,6 +660,9 @@ export const usePortfolioStore = defineStore('portfolio', {
       if (Array.isArray(t.tag) && t.tag.length) {
         run('UPDATE stocks SET tag = ? WHERE market = ? AND code = ?', [JSON.stringify(t.tag), t.market, t.code])
       }
+      if (t.purpose) {
+        run('UPDATE stocks SET purpose = ? WHERE market = ? AND code = ?', [t.purpose, t.market, t.code])
+      }
       await this.loadData()
       markDirty()
       await persist()
@@ -674,7 +684,7 @@ export const usePortfolioStore = defineStore('portfolio', {
     },
 
     // 新增/更新股票主数据（标签、备注、所属券商等）
-    async upsertStock({ market, code, name = '', tag = null, note = null, broker = null, assetType = null }) {
+    async upsertStock({ market, code, name = '', tag = null, note = null, broker = null, assetType = null, purpose = null }) {
       const exist = get('SELECT * FROM stocks WHERE market = ? AND code = ?', [market, code])
       if (exist) {
         if (name) run('UPDATE stocks SET name = ? WHERE id = ?', [name, exist.id])
@@ -684,15 +694,19 @@ export const usePortfolioStore = defineStore('portfolio', {
         if (assetType !== null && assetType !== undefined) {
           run('UPDATE stocks SET asset_type = ? WHERE id = ?', [assetType, exist.id])
         }
+        if (purpose !== null && purpose !== undefined) {
+          run('UPDATE stocks SET purpose = ? WHERE id = ?', [purpose, exist.id])
+        }
       } else {
-        run('INSERT INTO stocks (market, code, name, tag, note, broker, asset_type) VALUES (?,?,?,?,?,?,?)', [
+        run('INSERT INTO stocks (market, code, name, tag, note, broker, asset_type, purpose) VALUES (?,?,?,?,?,?,?,?)', [
           market,
           code,
           name,
           JSON.stringify(Array.isArray(tag) ? tag : []),
           note || '',
           broker || this.defaultBroker,
-          assetType || ''
+          assetType || '',
+          purpose || ''
         ])
       }
       await this.loadData()
@@ -709,10 +723,12 @@ export const usePortfolioStore = defineStore('portfolio', {
       const note = patch.note ?? exist?.note ?? ''
       const broker = patch.broker ?? exist?.broker ?? this.defaultBroker
       const assetType = patch.assetType ?? exist?.asset_type ?? ''
+      // 用途标签是单值字符串；未传时保留原值，传空串表示清空为「未设置」
+      const purpose = patch.purpose ?? exist?.purpose ?? ''
       if (exist) {
-        run('UPDATE stocks SET name = ?, tag = ?, note = ?, broker = ?, asset_type = ? WHERE id = ?', [name, tag, note, broker, assetType, exist.id])
+        run('UPDATE stocks SET name = ?, tag = ?, note = ?, broker = ?, asset_type = ?, purpose = ? WHERE id = ?', [name, tag, note, broker, assetType, purpose, exist.id])
       } else {
-        run('INSERT INTO stocks (market, code, name, tag, note, broker, asset_type) VALUES (?,?,?,?,?,?,?)', [market, code, name, tag, note, broker, assetType])
+        run('INSERT INTO stocks (market, code, name, tag, note, broker, asset_type, purpose) VALUES (?,?,?,?,?,?,?,?)', [market, code, name, tag, note, broker, assetType, purpose])
       }
       if (name) run('UPDATE trades SET name = ? WHERE market = ? AND code = ?', [name, market, code])
       if (syncTrades) {

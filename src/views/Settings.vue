@@ -71,12 +71,13 @@ const SHEET_TITLES = {
   rates: '汇率设置',
   brokers: '券商管理',
   tags: '标签管理',
+  purposes: '用途标签管理',
   docs: '数据说明'
 }
 const sheetTitle = computed(() => SHEET_TITLES[sheet.value] || '')
 // 表单类抽屉给足高度，纯说明/选项类收紧一些
 const sheetSize = computed(() =>
-  ['sync', 'brokers', 'tags'].includes(sheet.value) ? 'min(640px, 84vh)' : 'min(640px, 62vh)'
+  ['sync', 'brokers', 'tags', 'purposes'].includes(sheet.value) ? 'min(640px, 84vh)' : 'min(640px, 62vh)'
 )
 
 function openSheet(name) {
@@ -392,6 +393,44 @@ function commitRename(oldTag) {
   editingTag.value = ''
   ElMessage.success('已重命名')
 }
+
+// ===== 用途标签管理 =====
+const newPurpose = ref('')
+const editingPurpose = ref('')
+const purposeInput = ref('')
+
+function addPurpose() {
+  const t = newPurpose.value.trim()
+  if (!t) return
+  if (settings.purposes.includes(t)) return ElMessage.warning('用途已存在')
+  settings.savePurposes([...settings.purposes, t])
+  newPurpose.value = ''
+  ElMessage.success('已添加')
+}
+
+async function removePurpose(t) {
+  try {
+    await ElMessageBox.confirm(`将「${t}」从用途标签组移除？已使用该用途的持仓不受影响。`, '移除用途', { type: 'warning' })
+    settings.savePurposes(settings.purposes.filter((x) => x !== t))
+    ElMessage.success('已移除')
+  } catch {
+    /* 取消 */
+  }
+}
+
+function startRenamePurpose(t) {
+  editingPurpose.value = t
+  purposeInput.value = t
+}
+
+function commitRenamePurpose(oldTag) {
+  const name = purposeInput.value.trim()
+  if (!name) return ElMessage.warning('名称不能为空')
+  if (settings.purposes.includes(name) && name !== oldTag) return ElMessage.warning('用途已存在')
+  settings.savePurposes(settings.purposes.map((x) => (x === oldTag ? name : x)))
+  editingPurpose.value = ''
+  ElMessage.success('已重命名')
+}
 </script>
 
 <template>
@@ -492,6 +531,12 @@ function commitRename(oldTag) {
         <el-icon class="ico"><PriceTag /></el-icon>
         <span class="row-title">标签管理</span>
         <span class="row-value">{{ settings.tags.length }} 个标签</span>
+        <el-icon class="chev"><ArrowRight /></el-icon>
+      </div>
+      <div class="srow" @click="openSheet('purposes')">
+        <el-icon class="ico"><Aim /></el-icon>
+        <span class="row-title">用途标签管理</span>
+        <span class="row-value">{{ settings.purposes.length }} 个用途</span>
         <el-icon class="chev"><ArrowRight /></el-icon>
       </div>
     </div>
@@ -690,6 +735,32 @@ function commitRename(oldTag) {
               </div>
             </template>
             <div v-else class="muted">暂无标签，点击上方添加</div>
+          </template>
+
+          <!-- 用途标签管理 -->
+          <template v-else-if="sheet === 'purposes'">
+            <div class="st-note">与「资产类别标签」并列的第二个维度，每只股票只能选一个用途；不填的持仓归为「未设置」。</div>
+            <div class="row gap8" style="margin: 12px 0">
+              <el-input v-model="newPurpose" placeholder="输入新用途，如：网格" @keyup.enter="addPurpose" />
+              <el-button type="primary" @click="addPurpose">添加</el-button>
+            </div>
+            <template v-if="settings.purposes.length">
+              <div v-for="pp in settings.purposes" :key="pp" class="tag-row">
+                <template v-if="editingPurpose === pp">
+                  <el-input v-model="purposeInput" size="small" style="flex: 1" @keyup.enter="commitRenamePurpose(pp)" />
+                  <el-button size="small" type="primary" @click="commitRenamePurpose(pp)">保存</el-button>
+                  <el-button size="small" @click="editingPurpose = ''">取消</el-button>
+                </template>
+                <template v-else>
+                  <span class="tag-name">{{ pp }}</span>
+                  <div class="row gap4">
+                    <el-button size="small" text @click="startRenamePurpose(pp)">重命名</el-button>
+                    <el-button size="small" text type="danger" @click="removePurpose(pp)">删除</el-button>
+                  </div>
+                </template>
+              </div>
+            </template>
+            <div v-else class="muted">暂无用途标签，点击上方添加</div>
           </template>
 
           <!-- 数据说明 -->

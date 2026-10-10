@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS stocks (
   note TEXT DEFAULT '',
   broker TEXT DEFAULT '',
   asset_type TEXT DEFAULT '',
+  purpose TEXT DEFAULT '',
   created_at TEXT DEFAULT (datetime('now','localtime')),
   UNIQUE(market, code)
 );
@@ -75,6 +76,8 @@ function migrate() {
   try { run('ALTER TABLE stocks ADD COLUMN broker TEXT DEFAULT ""') } catch {}
   // 资产二级分类（股票/基金/可转债），空表示按代码自动推断
   try { run('ALTER TABLE stocks ADD COLUMN asset_type TEXT DEFAULT ""') } catch {}
+  // 用途标签（长期持有/打新/波段…），与资产类别标签并列，每只股票只能选一个，空表示未设置
+  try { run('ALTER TABLE stocks ADD COLUMN purpose TEXT DEFAULT ""') } catch {}
   try { run('ALTER TABLE trades ADD COLUMN broker TEXT DEFAULT ""') } catch {}
   try { run('ALTER TABLE cash_flows ADD COLUMN broker TEXT DEFAULT ""') } catch {}
   // 初始建仓标记列（老库无此列时补列）

@@ -15,6 +15,7 @@ import {
   addCloudArchive
 } from '../db'
 import { uploadBackup, downloadBackup, parseRepo } from '../services/github'
+import { DEFAULT_PURPOSES } from '../constants'
 
 /** 生成文件名的日期串：20260908-103000 */
 function fmtStamp(ts) {
@@ -45,6 +46,8 @@ export const useSettingsStore = defineStore('settings', {
     stampTaxRate: 0.0005,
     refreshMinutes: 10,
     tags: [],
+    // 用途标签：与资产类别标签并列，每只股票只能选一个；未填归为「未设置」
+    purposes: [...DEFAULT_PURPOSES],
     lastBackupAt: '',
     backupState: 'idle', // idle | running | ok | error
     backupError: '',
@@ -73,6 +76,7 @@ export const useSettingsStore = defineStore('settings', {
       const stampTaxRate = getSetting('stampTaxRate')
       const refreshMinutes = getSetting('refreshMinutes')
       const tags = getSetting('tags')
+      const purposes = getSetting('purposes', null)
       const lastBackupAt = getSetting('lastBackupAt')
       const lastSyncAt = getSetting('lastSyncAt')
       if (github && !skipGithub) this.github = { ...this.github, ...github }
@@ -80,6 +84,8 @@ export const useSettingsStore = defineStore('settings', {
       if (stampTaxRate != null) this.stampTaxRate = stampTaxRate
       if (refreshMinutes != null) this.refreshMinutes = refreshMinutes
       if (Array.isArray(tags)) this.tags = tags
+      // purposes 为 null 表示从未存过（首次升级），保留预设；存过则尊重用户改动（含删空）
+      if (Array.isArray(purposes)) this.purposes = purposes
       // skipGithub 时同步/恢复云端数据刚替换本地库，保持本地操作时间戳不被云端旧值覆盖
       if (lastBackupAt && !skipGithub) this.lastBackupAt = lastBackupAt
       if (lastSyncAt && !skipGithub) this.lastSyncAt = lastSyncAt
@@ -87,6 +93,12 @@ export const useSettingsStore = defineStore('settings', {
     async saveTags(v) {
       this.tags = [...new Set(v.filter(Boolean))]
       setSetting('tags', this.tags)
+      markDirty()
+      await persist()
+    },
+    async savePurposes(v) {
+      this.purposes = [...new Set(v.filter(Boolean))]
+      setSetting('purposes', this.purposes)
       markDirty()
       await persist()
     },

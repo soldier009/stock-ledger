@@ -10,6 +10,8 @@ const props = defineProps({
 const router = useRouter()
 const pnlCls = computed(() => pnlClass(props.p.pnlCny))
 const tags = computed(() => parseTags(props.p.tag))
+// 用途标签：与资产类别并列的第二个维度，单值字符串，空表示未设置
+const purpose = computed(() => String(props.p.purpose || ''))
 
 function goDetail() {
   router.push(`/stock/${props.p.market}/${props.p.code}`)
@@ -28,8 +30,10 @@ function goDetail() {
         <div class="muted num" style="margin-top: 4px">
           {{ p.code }} · {{ fmtShares(p.shares, p.market) }} 股
         </div>
-        <div v-if="tags.length" class="row gap4" style="margin-top: 6px">
+        <div class="row gap4" style="margin-top: 6px">
           <el-tag v-for="tg in tags" :key="tg" size="small" effect="light" type="info">{{ tg }}</el-tag>
+          <el-tag v-if="purpose" size="small" effect="plain" type="primary">{{ purpose }}</el-tag>
+          <el-tag v-else size="small" effect="plain" type="info">用途未设置</el-tag>
         </div>
       </div>
       <div class="right-col">
