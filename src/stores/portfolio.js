@@ -177,6 +177,13 @@ export const usePortfolioStore = defineStore('portfolio', {
       return (market, code) => tagByKey.get(market + ':' + code) || ''
     },
 
+    // 用途标签查询器（单值，空表示未设置）
+    _purposeResolver() {
+      const byKey = new Map()
+      for (const s of this.stocks) byKey.set(s.market + ':' + s.code, s.purpose || '')
+      return (market, code) => byKey.get(market + ':' + code) || ''
+    },
+
     recompute() {
       const r = computeAll(this.trades, this.cashFlows, this.defaultBroker)
       const settings = useSettingsStore()
@@ -232,9 +239,21 @@ export const usePortfolioStore = defineStore('portfolio', {
       const totalPnl = totalAssets - r.principal
 
       this.positions = positions
-      // 每条已实现盈亏打上资产类别（股票/基金/可转债），供收益曲线按类别拆分
+      // 每条已实现盈亏打上资产类别（股票/基金/可转债），供收益曲线按类别拆分；
+      // 同时打上标签与用途：标签/用途挂在「标的」上而非「持仓」上，
+      // 因此即使该标的已经清仓（不在 positions 里），历史上的已实现盈亏依然能按标签/用途归组
       const assetTypeOf = this._assetTypeResolver()
-      this.realizedEvents = r.realizedEvents.map((e) => ({ ...e, asset: assetTypeOf(e.market, e.code) }))
+      const tagOf = this._tagResolver()
+      const purposeOf = this._purposeResolver()
+      this.realizedEvents = r.realizedEvents.map((e) => {
+        const t = tagOf(e.market, e.code)
+        return {
+          ...e,
+          asset: assetTypeOf(e.market, e.code),
+          tag: t ? JSON.stringify([t]) : '[]',
+          purpose: purposeOf(e.market, e.code)
+        }
+      })
       this.monthly = monthlyRealized(r.realizedEvents)
       this.yearly = yearlyRealized(r.realizedEvents)
       this.yearlyDetail = yearlyStockDetail(r.realizedEvents)

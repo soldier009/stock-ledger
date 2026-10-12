@@ -1,12 +1,17 @@
 <script setup>
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import dayjs from 'dayjs'
 import { usePortfolioStore } from '../stores/portfolio'
-import { drawdown, cumulativeRealized, NO_TAG } from '../services/calc'
+import { Calendar, ArrowRight } from '@element-plus/icons-vue'
+import { drawdown, drawdownEvents, cumulativeRealized, NO_TAG } from '../services/calc'
 import { fmtMoney, fmtNum, fmtPct, fmtShares, pnlClass } from '../utils/format'
+import { buildPnlRows, sumRows, hasForeignRealized } from '../utils/pnl'
+import DonutChart from '../components/DonutChart.vue'
 
 const portfolio = usePortfolioStore()
+const router = useRouter()
 const calendarDate = ref(dayjs())
 // 日历卡片：「日历 / 柱形图」两档；柱形图档内再分月、年
 const calView = ref('calendar')
@@ -311,35 +316,52 @@ function drawAssetCurve() {
   }, true)
 }
 
-// 回撤分析：范围页签
+// 回撤分析：范围页签（自定义档用起止日期）
 const ddRanges = [
-  { label: '近一月', key: '1m' },
-  { label: '近半年', key: '6m' },
-  { label: '年初至今', key: 'ytd' },
-  { label: '近三年', key: '3y' },
-  { label: '近五年', key: '5y' }
+  { label: '本月', key: 'mtd' },
+  { label: '一月', key: '1m' },
+  { label: '三月', key: '3m' },
+  { label: '今年', key: 'ytd' },
+  { label: '一年', key: '1y' },
+  { label: '全部', key: 'all' },
+  { label: '自定义', key: 'custom', icon: true }
 ]
 const ddRange = ref('1m')
+const ddCustomStart = ref('')
+const ddCustomEnd = ref('')
 
 function ddStartOfRange(key) {
   const today = dayjs()
   switch (key) {
+    case 'mtd': return today.startOf('month')
     case '1m': return today.subtract(1, 'month')
-    case '6m': return today.subtract(6, 'month')
+    case '3m': return today.subtract(3, 'month')
     case 'ytd': return today.startOf('year')
     case '1y': return today.subtract(1, 'year')
-    case '3y': return today.subtract(3, 'year')
-    case '5y': return today.subtract(5, 'year')
+    case 'all': return dayjs('1900-01-01')
+    case 'custom': return ddCustomStart.value ? dayjs(ddCustomStart.value) : today.subtract(1, 'month')
     default: return today.subtract(1, 'month')
   }
 }
 
 const ddFiltered = computed(() => {
   const start = ddStartOfRange(ddRange.value)
-  return portfolio.netValue.filter((p) => dayjs(p.date).isAfter(start) || dayjs(p.date).isSame(start, 'day'))
+  const end = ddRange.value === 'custom' && ddCustomEnd.value ? dayjs(ddCustomEnd.value) : null
+  return portfolio.netValue.filter((p) => {
+    const d = dayjs(p.date)
+    if (d.isBefore(start, 'day')) return false
+    if (end && d.isAfter(end, 'day')) return false
+    return true
+  })
 })
 
 const ddStats = computed(() => drawdown(ddFiltered.value))
+
+// 多次回撤事件：忽略小于该值（绝对值百分比）的波动，避免把四舍五入级别的抖动也列出来
+const DD_MIN_PCT = 0.1
+const DD_MARK_MAX = 5 // 曲线上最多标几个序号
+const ddEvents = computed(() => drawdownEvents(ddFiltered.value, { minPct: DD_MIN_PCT }))
+const ddMarks = computed(() => ddEvents.value.slice(0, DD_MARK_MAX))
 
 function drawDrawdown() {
   const chart = initChart(drawdownRef, 'drawdown')
@@ -351,16 +373,32 @@ function drawDrawdown() {
     if (d.netValue > peak) peak = d.netValue
     return peak > 0 ? ((d.netValue - peak) / peak) * 100 : 0
   })
+  const values = ddSeries.map((v) => Math.round(v * 100) / 100)
+  // 事件谷底处标序号圆点：用数据下标定位，避免跨年时 MM-DD 重名
+  const marks = ddMarks.value
+    .map((e, i) => {
+      const idx = data.findIndex((d) => d.date === e.troughDate)
+      if (idx < 0) return null
+      return { coord: [idx, values[idx]], value: i + 1 }
+    })
+    .filter(Boolean)
   chart.setOption({
     ...commonOption(),
     tooltip: { trigger: 'axis', valueFormatter: (v) => fmtNum(v, 2) + '%' },
     xAxis: { type: 'category', boundaryGap: false, data: data.map((d) => d.date.slice(5)), axisLabel: { color: '#94a3b8', fontSize: 10 } },
     yAxis: { type: 'value', axisLabel: { color: '#94a3b8', fontSize: 10, formatter: (v) => v + '%' }, splitLine: { lineStyle: { color: '#f1f5f9' } } },
     series: [{
-      name: '回撤', type: 'line', data: ddSeries.map((v) => Math.round(v * 100) / 100),
+      name: '回撤', type: 'line', data: values,
       smooth: false, symbol: 'none', lineStyle: { color: '#dc2626', width: 2 },
       itemStyle: { color: '#dc2626' },
-      areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(220,38,38,0.22)' }, { offset: 1, color: 'rgba(220,38,38,0.02)' }] } }
+      areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(220,38,38,0.22)' }, { offset: 1, color: 'rgba(220,38,38,0.02)' }] } },
+      markPoint: {
+        symbol: 'circle',
+        symbolSize: 18,
+        itemStyle: { color: '#dc2626', borderColor: '#fff', borderWidth: 1 },
+        label: { show: true, position: 'inside', color: '#fff', fontSize: 11, fontWeight: 600, formatter: (p) => String(p.data.value) },
+        data: marks
+      }
     }]
   })
 }
@@ -417,6 +455,14 @@ watch([calView, chartMode], async () => {
 })
 
 watch(ddRange, drawDrawdown)
+// 自定义起止日期变化后重算（开始晚于结束时自动对调，保证区间有效）
+watch([ddCustomStart, ddCustomEnd], ([s, e]) => {
+  if (s && e && dayjs(s).isAfter(dayjs(e))) {
+    ddCustomStart.value = e
+    ddCustomEnd.value = s
+  }
+  drawDrawdown()
+})
 
 function drawVisible() {
   drawCurve()
@@ -584,6 +630,32 @@ function signedMoney(v) {
   if (!v) return fmtMoney(0, 0)
   return `${v > 0 ? '+' : ''}${fmtMoney(v, 0)}`
 }
+function signedPct2(v) {
+  const n = Number(v) || 0
+  return `${n > 0 ? '+' : ''}${fmtPct(n, 2)}`
+}
+
+// ===== 成本与盈亏：入口卡片，点进 /pnl 三级详情页 =====
+// 口径：成本 = 持仓成本（含已清仓标的的历史买入额），收益率 = 浮动盈亏 ÷ 成本
+const pnlRows = computed(() =>
+  buildPnlRows(portfolio.positions, portfolio.realizedEvents, portfolio.closedRounds)
+)
+const pnlSum = computed(() => sumRows(pnlRows.value))
+const pnlCostFilled = computed(() => portfolio.positions.filter((p) => Number(p.avgCost) > 0).length)
+// 港美股已实现盈亏是交易原币，未折人民币，界面上说明一下
+const pnlForeign = computed(() => hasForeignRealized(pnlRows.value))
+const pnlSlices = computed(() => {
+  const s = pnlSum.value
+  const items = [{ name: '成本', value: s.cost, color: '#cbd5e1' }]
+  if (s.floating !== 0) {
+    items.push({
+      name: s.floating > 0 ? '浮动盈利' : '浮动亏损',
+      value: Math.abs(s.floating),
+      color: s.floating > 0 ? '#dc2626' : '#10b981'
+    })
+  }
+  return items
+})
 </script>
 
 <template>
@@ -625,6 +697,52 @@ function signedMoney(v) {
       <div ref="assetRef" class="chart"></div>
       <div v-if="!assetHasData" class="muted" style="text-align: center; padding: 4px 0 8px">暂无数据</div>
       <div class="muted" style="font-size: 11px; margin-top: 2px">口径：持仓市值（不含现金），按当日收盘价估值</div>
+    </div>
+
+    <!-- 成本与盈亏：环形图为中心收益率，右侧四项指标，整卡点进 /pnl -->
+    <div class="card" @click="router.push('/pnl')">
+      <div class="row between" style="margin-bottom: 6px">
+        <div class="section-title">成本与盈亏</div>
+        <el-icon class="pnl-arrow"><ArrowRight /></el-icon>
+      </div>
+      <div class="muted pnl-sub">
+        {{ pnlCostFilled }}/{{ portfolio.positions.length }} 项资产已填写成本价
+      </div>
+      <div class="pnl-body">
+        <DonutChart
+          :items="pnlSlices"
+          center-label="收益率"
+          :center-value="signedPct2(pnlSum.returnPct)"
+          :center-font-size="15"
+          :radius="['54%', '78%']"
+          height="140px"
+        />
+        <div class="pnl-list">
+          <div class="pnl-line">
+            <span class="pnl-line-label">成本</span>
+            <span class="pnl-line-value">{{ fmtMoney(pnlSum.cost, 0) }}</span>
+          </div>
+          <div class="pnl-line">
+            <span class="pnl-line-label">市值</span>
+            <span class="pnl-line-value">{{ fmtMoney(pnlSum.mv, 0) }}</span>
+          </div>
+          <div class="pnl-line">
+            <span class="pnl-line-label">浮动盈亏</span>
+            <span class="pnl-line-value" :class="pnlClass(pnlSum.floating)">{{ signedMoney(pnlSum.floating) }}</span>
+          </div>
+          <div class="pnl-line">
+            <span class="pnl-line-label">已实现盈亏</span>
+            <span class="pnl-line-value" :class="pnlClass(pnlSum.realized)">{{ signedMoney(pnlSum.realized) }}</span>
+          </div>
+          <div class="pnl-line total">
+            <span class="pnl-line-label">合计盈亏</span>
+            <span class="pnl-line-value" :class="pnlClass(pnlSum.totalPnl)">{{ signedMoney(pnlSum.totalPnl) }}</span>
+          </div>
+        </div>
+      </div>
+      <div v-if="pnlForeign" class="muted pnl-sub" style="margin-top: 6px">
+        港美股已实现盈亏按交易原币计，未折人民币
+      </div>
     </div>
 
     <!-- 收益曲线：类别 × 市场 × 时间范围 -->
@@ -840,7 +958,30 @@ function signedMoney(v) {
           class="dd-chip"
           :class="{ active: ddRange === r.key }"
           @click="ddRange = r.key"
-        >{{ r.label }}</span>
+        >
+          <el-icon v-if="r.icon" :size="12"><Calendar /></el-icon>
+          {{ r.label }}
+        </span>
+      </div>
+      <!-- 自定义区间：起止日期 -->
+      <div v-if="ddRange === 'custom'" class="dd-custom">
+        <el-date-picker
+          v-model="ddCustomStart"
+          type="date"
+          value-format="YYYY-MM-DD"
+          placeholder="开始日期"
+          size="small"
+          class="dd-date"
+        />
+        <span class="muted">→</span>
+        <el-date-picker
+          v-model="ddCustomEnd"
+          type="date"
+          value-format="YYYY-MM-DD"
+          placeholder="结束日期"
+          size="small"
+          class="dd-date"
+        />
       </div>
       <div class="row between" style="margin: 10px 0 6px">
         <div>
@@ -859,36 +1000,33 @@ function signedMoney(v) {
       <div ref="drawdownRef" class="chart"></div>
     </div>
 
-    <!-- 最大回撤事件 -->
+    <!-- 回撤事件：随所选区间变化，按跌幅从大到小排序 -->
     <div class="card">
-      <div class="section-title" style="margin-bottom: 12px">最大回撤事件</div>
-      <div v-if="ddFiltered.length >= 2 && ddStats.maxDrawdownPct !== 0" class="event-grid">
-        <div>
-          <div class="muted">百分比</div>
-          <div class="num down">{{ fmtPct(ddStats.maxDrawdownPct) }}</div>
-        </div>
-        <div>
-          <div class="muted">峰值日期</div>
-          <div class="num">{{ ddStats.peakDate || '—' }}</div>
-        </div>
-        <div>
-          <div class="muted">谷底日期</div>
-          <div class="num">{{ ddStats.troughDate || '—' }}</div>
-        </div>
-        <div>
-          <div class="muted">下跌历时</div>
-          <div class="num">{{ ddStats.days }} 天</div>
-        </div>
-        <div>
-          <div class="muted">修复日期</div>
-          <div class="num">{{ ddStats.recovered ? ddStats.recoveryDate : '未修复' }}</div>
-        </div>
-        <div>
-          <div class="muted">修复历时</div>
-          <div class="num">{{ ddStats.recovered ? ddStats.recoveryDays + ' 天' : '—' }}</div>
+      <div class="row between" style="margin-bottom: 12px">
+        <div class="section-title">回撤事件</div>
+        <span class="muted">跌幅 ≥ {{ DD_MIN_PCT }}% · {{ ddEvents.length }} 次</span>
+      </div>
+      <div v-if="ddEvents.length" class="dd-events">
+        <div v-for="(e, i) in ddEvents" :key="e.peakDate + e.troughDate" class="dd-event">
+          <div class="dd-badge">{{ i + 1 }}</div>
+          <div class="dd-event-main">
+            <div class="row between">
+              <span class="num down dd-pct">{{ fmtPct(e.dropPct) }}</span>
+              <span class="dd-range-text">{{ e.peakDate }} → {{ e.troughDate }}</span>
+            </div>
+            <div class="muted dd-sub">
+              下跌 {{ e.dropDays }} 天 ·
+              {{ e.recovered ? `已于 ${e.recoveryDate} 修复（${e.recoveryDays} 天）` : '尚未修复' }}
+            </div>
+          </div>
         </div>
       </div>
-      <div v-else class="muted" style="text-align: center; padding: 12px">暂无回撤数据</div>
+      <div v-else class="muted" style="text-align: center; padding: 12px">
+        <template v-if="ddStats.maxDrawdownPct !== 0">
+          该区间最大回撤 {{ fmtPct(ddStats.maxDrawdownPct) }}，未达 {{ DD_MIN_PCT }}% 阈值，不单列事件
+        </template>
+        <template v-else>该区间暂无回撤数据</template>
+      </div>
     </div>
 
     <!-- 点击日历日期：当日卖出明细 -->
@@ -938,6 +1076,48 @@ function signedMoney(v) {
   font-size: 16px;
   font-weight: 700;
   margin-bottom: 12px;
+}
+/* 成本与盈亏入口卡 */
+.pnl-arrow {
+  color: #cbd5e1;
+  font-size: 16px;
+}
+.pnl-sub {
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+.pnl-body {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.pnl-body :deep(.donut) {
+  flex: 0 0 46%;
+}
+.pnl-list {
+  flex: 1;
+  min-width: 0;
+}
+.pnl-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 5px 0;
+}
+.pnl-line-label {
+  font-size: 12px;
+  color: var(--text-2, #64748b);
+}
+.pnl-line-value {
+  font-size: 13px;
+  font-weight: 600;
+}
+.pnl-line.total {
+  border-top: 1px solid #f1f5f9;
+  margin-top: 2px;
+}
+.pnl-line.total .pnl-line-value {
+  font-size: 15px;
 }
 .metric-grid {
   display: grid;
@@ -1135,6 +1315,67 @@ function signedMoney(v) {
   background: #fdecec;
   color: #dc2626;
   font-weight: 600;
+}
+.dd-chip .el-icon {
+  margin-right: 2px;
+  vertical-align: -1px;
+}
+/* 自定义区间：起止日期 */
+.dd-custom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+.dd-custom .dd-date {
+  flex: 1;
+  min-width: 0;
+}
+/* 回撤事件列表 */
+.dd-events {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.dd-event {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #f1f5f9;
+}
+.dd-event:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+.dd-badge {
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #dc2626;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.dd-event-main {
+  flex: 1;
+  min-width: 0;
+}
+.dd-event-main .dd-pct {
+  font-size: 14px;
+  font-weight: 700;
+}
+.dd-range-text {
+  font-size: 12px;
+  color: var(--text-2);
+}
+.dd-sub {
+  margin-top: 2px;
+  font-size: 11px;
 }
 .event-grid {
   display: grid;

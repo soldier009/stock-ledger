@@ -783,3 +783,62 @@ export function drawdown(series) {
     currentDrawdownPct
   }
 }
+
+/**
+ * 多次回撤事件：净值跌破前高即开启一次事件，涨回前高即关闭。
+ * 序列结束时仍未涨回前高的，记为「尚未修复」。
+ * @param {Array} series 净值序列 [{ date, netValue }]
+ * @param {Object} [opts] minPct：忽略跌幅小于该值（绝对值，百分比）的微小波动
+ * @returns {Array} 按跌幅从大到小排序的事件数组
+ */
+export function drawdownEvents(series, { minPct = 0.5 } = {}) {
+  if (!series || series.length < 2) return []
+  const events = []
+  let peak = series[0].netValue
+  let peakDate = series[0].date
+  let cur = null // 进行中的回撤事件
+
+  for (const p of series) {
+    if (cur) {
+      if (p.netValue < cur.troughValue) {
+        cur.troughValue = p.netValue
+        cur.troughDate = p.date
+      }
+      // 涨回事件起点的高点即视为修复
+      if (p.netValue >= cur.peakValue) {
+        cur.recovered = true
+        cur.recoveryDate = p.date
+        cur.recoveryDays = dayjs(cur.recoveryDate).diff(dayjs(cur.troughDate), 'day')
+        events.push(cur)
+        cur = null
+        peak = p.netValue
+        peakDate = p.date
+        continue
+      }
+    } else if (p.netValue < peak) {
+      cur = {
+        peakDate,
+        peakValue: peak,
+        troughValue: p.netValue,
+        troughDate: p.date,
+        recovered: false,
+        recoveryDate: null,
+        recoveryDays: 0
+      }
+    }
+    if (!cur && p.netValue >= peak) {
+      peak = p.netValue
+      peakDate = p.date
+    }
+  }
+  if (cur) events.push(cur)
+
+  return events
+    .map((e) => ({
+      ...e,
+      dropPct: e.peakValue > 0 ? ((e.troughValue - e.peakValue) / e.peakValue) * 100 : 0,
+      dropDays: dayjs(e.troughDate).diff(dayjs(e.peakDate), 'day')
+    }))
+    .filter((e) => Math.abs(e.dropPct) >= minPct)
+    .sort((a, b) => a.dropPct - b.dropPct)
+}
