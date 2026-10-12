@@ -13,5 +13,12 @@ const routes = [
 
 export default createRouter({
   history: createWebHashHistory(),
-  routes
+  routes,
+  // 页面滚动是 window 级的，切换路由时不会自动重置：
+  // 从滚到很下面的总览点进详情页，会直接落在详情页底部。
+  // 新页面统一回到顶部；系统返回/前进时恢复离开时的位置。
+  scrollBehavior(to, from, savedPosition) {
+    if (savedPosition) return savedPosition
+    return { top: 0 }
+  }
 })

@@ -476,16 +476,15 @@ onMounted(() => {
           :items="compSlices"
           center-label="总资产"
           :center-value="fmtMoney(compTotal, 0)"
-          :center-font-size="15"
-          :radius="['54%', '78%']"
-          height="140px"
+          :center-font-size="13"
+          :radius="['58%', '80%']"
+          height="110px"
         />
         <div class="comp-list">
           <div v-for="r in compRows" :key="r.name" class="distribution-item">
             <div class="item-dot" :style="{ backgroundColor: r.color }"></div>
             <div class="item-name">{{ r.name }}</div>
             <div class="item-percentage">{{ compPct(r.value) }}%</div>
-            <div class="item-amount">{{ fmtMoney(r.value, 0) }}</div>
           </div>
           <div v-if="!compRows.length" class="muted">暂无持仓数据</div>
         </div>
@@ -1180,8 +1179,8 @@ onMounted(() => {
   gap: 8px;
 }
 .comp-body > :first-child {
-  width: 140px;
-  flex: 0 0 140px;
+  width: 110px;
+  flex: 0 0 110px;
 }
 .comp-list {
   flex: 1;
