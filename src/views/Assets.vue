@@ -1,21 +1,20 @@
 <script setup>
 import { ref, computed } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { usePortfolioStore } from '../stores/portfolio'
-import { fmtMoney, fmtNum, fmtPct, pnlClass, fmtTime, parseTags } from '../utils/format'
+import { useSettingsStore } from '../stores/settings'
+import { fmtMoney, fmtPct, pnlClass, fmtTime, parseTags } from '../utils/format'
 import { matchPosition, normKeyword } from '../utils/search'
 import PullRefresh from '../components/PullRefresh.vue'
 import PositionCard from '../components/PositionCard.vue'
 import TradeForm from '../components/TradeForm.vue'
-import CashForm from '../components/CashForm.vue'
+import BatchEditSheet from '../components/BatchEditSheet.vue'
 
 const router = useRouter()
 
 const portfolio = usePortfolioStore()
 const tradeVisible = ref(false)
-const cashVisible = ref(false)
-const cashBroker = ref('')
 
 // 标签分组折叠状态：持久化到 localStorage，记住用户最后保持的展开/折叠
 const TAG_FOLD_KEY = 'sl-assets-tagFold'
@@ -36,26 +35,12 @@ function saveCollapsed() {
 }
 const collapsed = ref(loadCollapsed())
 
-function openCash(broker = '') {
-  cashBroker.value = broker || ''
-  cashVisible.value = true
-}
-
 const totals = computed(() => portfolio.totals)
 const totalCost = computed(() => portfolio.positions.reduce((a, p) => a + p.avgCost * p.shares * p.rate, 0))
 
-// 资金账户：累计入金 / 出金
-const inflow = computed(() =>
-  portfolio.cashFlows.filter((c) => c.type === 'deposit').reduce((a, c) => a + Number(c.amount || 0), 0)
-)
-const outflow = computed(() =>
-  portfolio.cashFlows.filter((c) => c.type === 'withdraw').reduce((a, c) => a + Number(c.amount || 0), 0)
-)
-// 累计入金中属于「补录建仓」自动生成的部分：虚拟入金，不是手动转进来的钱
-const initialInflow = computed(() =>
-  portfolio.cashFlows
-    .filter((c) => c.type === 'deposit' && c.origin === 'initial')
-    .reduce((a, c) => a + Number(c.amount || 0), 0)
+// 底部券商行：只显示各账户现金，流水与出入金都在资金账户页操作
+const brokerRows = computed(() =>
+  portfolio.brokers.map((b) => ({ name: b, balance: (totals.value.brokerCash || {})[b] || 0 }))
 )
 
 // 持仓查找：名称 / 代码 / 标签 / 用途 / 券商
@@ -112,6 +97,98 @@ async function onRefresh() {
     ElMessage.warning('部分行情获取失败，请检查网络')
   }
 }
+
+// ===== 批量管理模式：多选 + 批量改标签 / 用途 / 券商 =====
+const settings = useSettingsStore()
+const batchMode = ref(false)
+const batchVisible = ref(false)
+// 选中集合：key = market:code
+const selected = ref(new Set())
+const selectedList = computed(() =>
+  portfolio.positions.filter((p) => selected.value.has(`${p.market}:${p.code}`))
+)
+// 选中集合里涉及的交易条数，以及可连带迁移的「初始建仓」入金条数（ref_id 指向这些交易）
+const impact = computed(() => {
+  const keys = selected.value
+  let trades = 0
+  let flows = 0
+  for (const t of portfolio.trades) {
+    if (!keys.has(`${t.market}:${t.code}`)) continue
+    trades += 1
+  }
+  const tradeIds = new Set(
+    portfolio.trades.filter((t) => keys.has(`${t.market}:${t.code}`)).map((t) => t.id)
+  )
+  for (const c of portfolio.cashFlows) {
+    if (c.ref_id && tradeIds.has(c.ref_id)) flows += 1
+  }
+  return { trades, flows }
+})
+
+function toggleSelect(p) {
+  const key = `${p.market}:${p.code}`
+  const next = new Set(selected.value)
+  next.has(key) ? next.delete(key) : next.add(key)
+  selected.value = next
+}
+// 全选作用于「当前筛选结果」：先搜再全选，不必逐行点
+function selectVisible() {
+  const next = new Set(selected.value)
+  for (const p of matched.value) next.add(`${p.market}:${p.code}`)
+  selected.value = next
+}
+function exitBatch() {
+  batchMode.value = false
+  selected.value = new Set()
+}
+
+// 批量写入前自动留一份备份：配了 GitHub 就上传，没配只能提示先导出
+async function backupBeforeBatch() {
+  if (!settings.isGithubReady) {
+    ElMessage.warning('未配置 GitHub 同步，无法自动备份；批量修改不可撤销，建议先到设置页导出备份')
+    return
+  }
+  const ok = await settings.backupNow(true)
+  if (ok) ElMessage.success('已先备份当前数据到云端')
+  else ElMessage.warning(`云端备份失败：${settings.backupError || '未知原因'}，本次修改仍会执行`)
+}
+
+const applying = ref(false)
+async function applyBatch(patch) {
+  const targets = selectedList.value.map((p) => ({ market: p.market, code: p.code }))
+  if (!targets.length) return
+  const changed = []
+  if (patch.tag !== undefined) changed.push('标签')
+  if (patch.purpose !== undefined) changed.push('用途')
+  if (patch.broker) changed.push('所属券商')
+  try {
+    await ElMessageBox.confirm(
+      `将修改 ${targets.length} 只标的的${changed.join('、')}。此操作不可撤销，执行前会尝试备份一份。`,
+      '批量修改确认',
+      { confirmButtonText: '确认修改', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  applying.value = true
+  try {
+    await backupBeforeBatch()
+    const res = await portfolio.bulkUpdateStocks({
+      targets,
+      patch,
+      syncTrades: !!patch.syncTrades,
+      syncCash: !!patch.syncCash
+    })
+    const extra = res.trades || res.flows ? `（连带 ${res.trades} 笔交易、${res.flows} 笔入金）` : ''
+    ElMessage.success(`已修改 ${res.stocks} 只标的${extra}`)
+    batchVisible.value = false
+    exitBatch()
+  } catch (e) {
+    ElMessage.error(`批量修改失败：${e?.message || e}`)
+  } finally {
+    applying.value = false
+  }
+}
 </script>
 
 <template>
@@ -119,6 +196,8 @@ async function onRefresh() {
     <div class="page-header">
       <div class="page-title">资产</div>
       <div class="row gap8">
+        <el-button v-if="batchMode" size="small" @click="exitBatch">退出</el-button>
+        <el-button v-else size="small" @click="batchMode = true">批量</el-button>
         <el-button size="small" @click="router.push('/trades')">交易记录</el-button>
         <div class="muted num" v-if="portfolio.lastQuoteAt">
           更新于 {{ fmtTime(portfolio.lastQuoteAt) }}
@@ -166,29 +245,6 @@ async function onRefresh() {
       </div>
     </div>
 
-    <!-- 资金账户（按券商分账） -->
-    <div class="cash-card card">
-      <div class="row between">
-        <div class="section-title" style="margin-bottom: 0">资金账户</div>
-        <div class="muted" style="font-size: 11px">总可用 {{ fmtMoney(totals.cash, 2) }}</div>
-      </div>
-      <div class="broker-row" v-for="b in portfolio.brokers" :key="b">
-        <div class="flex1">
-          <div class="broker-name">{{ b }}</div>
-          <div class="broker-cash num">{{ fmtMoney(totals.brokerCash[b] || 0, 2) }}</div>
-        </div>
-        <el-button size="small" @click="openCash(b)">出入金</el-button>
-      </div>
-      <div class="divider" style="margin: 12px 0"></div>
-      <div class="row between">
-        <div class="muted">累计入金 <span class="num up">+{{ fmtNum(inflow, 2) }}</span></div>
-        <div class="muted">累计出金 <span class="num down">-{{ fmtNum(outflow, 2) }}</span></div>
-      </div>
-      <div v-if="initialInflow > 0" class="muted" style="font-size: 11px; margin-top: 6px">
-        累计入金包含补录建仓 {{ fmtMoney(initialInflow, 0) }}（补录历史持仓时自动生成，非手动转入）
-      </div>
-    </div>
-
     <!-- 持仓明细（按标签分组） -->
     <div v-if="portfolio.positions.length" class="holdings-search">
       <el-input v-model="keyword" size="small" placeholder="搜持仓：名称 / 代码 / 标签 / 用途" clearable>
@@ -197,6 +253,14 @@ async function onRefresh() {
       <div v-if="searching" class="row between" style="margin-top: 6px">
         <span class="muted num">命中 {{ matched.length }} / {{ portfolio.positions.length }} 只</span>
         <span class="clear-link" @click="keyword = ''">清空</span>
+      </div>
+      <!-- 批量模式：全选作用于当前筛选结果，可先搜再全选 -->
+      <div v-if="batchMode" class="row between batch-tools">
+        <span class="muted">已选 {{ selectedList.length }} 只</span>
+        <span class="row gap8">
+          <span class="clear-link" @click="selectVisible">全选当前 {{ matched.length }} 只</span>
+          <span class="clear-link" @click="selected = new Set()">清空选择</span>
+        </span>
       </div>
     </div>
     <div v-if="groups.length">
@@ -211,7 +275,14 @@ async function onRefresh() {
           </span>
         </div>
         <template v-if="!isCollapsed(g.tag)">
-          <PositionCard v-for="p in g.items" :key="p.market + ':' + p.code" :p="p" />
+          <PositionCard
+            v-for="p in g.items"
+            :key="p.market + ':' + p.code"
+            :p="p"
+            :selectable="batchMode"
+            :selected="selected.has(p.market + ':' + p.code)"
+            @toggle-select="toggleSelect(p)"
+          />
         </template>
       </div>
     </div>
@@ -225,21 +296,77 @@ async function onRefresh() {
       <div>暂无持仓</div>
       <div class="muted">点击右下角按钮，记录第一笔交易</div>
     </div>
+
+    <!-- 券商：各账户现金一览，点进资金账户页 -->
+    <div v-if="!batchMode" class="card broker-bar" @click="router.push('/cash')">
+      <div class="row between">
+        <div class="row gap8">
+          <span class="section-title" style="margin-bottom: 0">券商</span>
+          <span class="muted">现金合计 {{ fmtMoney(totals.cash, 2) }}</span>
+        </div>
+        <el-icon :size="16" style="color: #94a3b8"><ArrowRight /></el-icon>
+      </div>
+      <div class="broker-chips">
+        <span v-for="b in brokerRows" :key="b.name" class="broker-chip">
+          <span class="chip-name">{{ b.name }}</span>
+          <span class="chip-cash num" :class="{ down: b.balance < 0 }">{{ fmtMoney(b.balance, 0) }}</span>
+        </span>
+      </div>
+    </div>
   </PullRefresh>
 
-  <div class="fab">
+  <div v-if="!batchMode" class="fab">
     <el-button type="primary" circle size="large" @click="tradeVisible = true" title="记一笔">
       <el-icon :size="22"><Plus /></el-icon>
     </el-button>
   </div>
 
+  <!-- 批量操作条 -->
+  <div v-if="batchMode" class="batch-bar">
+    <span class="batch-count">已选 {{ selectedList.length }} 只</span>
+    <el-button size="small" :disabled="!selectedList.length" @click="batchVisible = true">
+      批量修改
+    </el-button>
+  </div>
+
   <TradeForm v-model="tradeVisible" />
-  <CashForm v-model="cashVisible" :preset-broker="cashBroker" />
+  <BatchEditSheet
+    v-model="batchVisible"
+    :count="selectedList.length"
+    :brokers="portfolio.brokers"
+    :impact-trades="impact.trades"
+    :impact-flows="impact.flows"
+    @apply="applyBatch"
+  />
 </template>
 
 <style scoped>
 .holdings-search {
   padding: 0 16px 8px;
+}
+.batch-tools {
+  margin-top: 8px;
+}
+.batch-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: calc(60px + env(safe-area-inset-bottom));
+  z-index: 95;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 auto;
+  max-width: 520px;
+  padding: 10px 16px;
+  background: #fff;
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -4px 14px rgba(15, 23, 42, 0.08);
+}
+.batch-count {
+  font-size: 13px;
+  font-weight: 600;
 }
 .clear-link {
   font-size: 12px;
@@ -272,28 +399,34 @@ async function onRefresh() {
 :deep(.el-button--small) {
   font-size: 11px;
 }
-.cash-card {
-  margin-bottom: 12px;
-  padding: 14px;
+/* 底部券商行：各账户现金一览，点整行进资金账户页 */
+.broker-bar {
+  padding: 12px 14px;
+  cursor: pointer;
 }
-.broker-row {
+.broker-chips {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 10px 0 6px;
+  gap: 8px;
+  margin-top: 10px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
-.broker-row + .broker-row {
-  border-top: 1px solid var(--border, #f1f5f9);
+.broker-chip {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 10px;
+  background: var(--bg);
+  font-size: 12px;
 }
-.broker-name {
-  font-size: 13px;
-  font-weight: 600;
+.chip-name {
+  color: var(--text-2);
 }
-.broker-cash {
-  font-size: 19px;
+.chip-cash {
   font-weight: 700;
-  margin-top: 2px;
+  font-size: 13px;
 }
 .group-section {
   margin-bottom: 12px;

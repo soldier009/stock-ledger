@@ -4,8 +4,12 @@ import { useRouter } from 'vue-router'
 import { fmtShares, fmtNum, fmtPct, pnlClass, marketLabel, parseTags } from '../utils/format'
 
 const props = defineProps({
-  p: { type: Object, required: true }
+  p: { type: Object, required: true },
+  // 批量模式：左侧出现复选框，整卡点击 = 勾选而不是进详情页
+  selectable: { type: Boolean, default: false },
+  selected: { type: Boolean, default: false }
 })
+const emit = defineEmits(['toggle-select'])
 
 const router = useRouter()
 const pnlCls = computed(() => pnlClass(props.p.pnlCny))
@@ -14,6 +18,11 @@ const tags = computed(() => parseTags(props.p.tag))
 const purpose = computed(() => String(props.p.purpose || ''))
 
 function goDetail() {
+  // 批量模式下点卡片=勾选，避免「想勾却跳走了」
+  if (props.selectable) {
+    emit('toggle-select')
+    return
+  }
   router.push(`/stock/${props.p.market}/${props.p.code}`)
 }
 </script>
@@ -21,6 +30,12 @@ function goDetail() {
 <template>
   <div class="pos-card card" @click="goDetail">
     <div class="row between">
+      <el-checkbox
+        v-if="selectable"
+        :model-value="selected"
+        class="pos-check"
+        @click.stop="emit('toggle-select')"
+      />
       <div class="flex1">
         <div class="row gap8">
           <span class="pos-name">{{ p.name || p.code }}</span>
@@ -85,6 +100,9 @@ function goDetail() {
   color: #cbd5e1;
   font-size: 14px;
   margin-top: 6px;
+}
+.pos-check {
+  margin-right: 4px;
 }
 .gap4 {
   gap: 4px;

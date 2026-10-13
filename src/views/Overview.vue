@@ -355,10 +355,14 @@ onMounted(() => {
           </div>
         </div>
         <div class="al-divider"></div>
-        <div>
+        <!-- 现金可点：进资金账户页看各券商余额与流水 -->
+        <div class="cash-cell" @click.stop="router.push('/cash')">
           <div class="muted" style="font-size: 12px">现金</div>
-          <div class="num" style="font-size: 16px; font-weight: 700; margin-top: 2px">
-            {{ showMoney ? fmtMoney(portfolio.totals.cash, 2) : '¥****' }}
+          <div class="row gap8" style="margin-top: 2px">
+            <span class="num" style="font-size: 16px; font-weight: 700">
+              {{ showMoney ? fmtMoney(portfolio.totals.cash, 2) : '¥****' }}
+            </span>
+            <el-icon :size="14" style="color: #94a3b8"><ArrowRight /></el-icon>
           </div>
         </div>
       </div>
@@ -733,6 +737,10 @@ onMounted(() => {
   width: 1px;
   height: 32px;
   background: #e2e8f0;
+}
+/* 现金可点：进资金账户页，点卡片其他区域仍是净资产走势 */
+.cash-cell {
+  cursor: pointer;
 }
 /* 已清仓记录入口：放在净资产卡片底部，点卡片其他区域仍是净资产走势 */
 .closed-entry {

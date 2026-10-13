@@ -784,6 +784,85 @@ export const usePortfolioStore = defineStore('portfolio', {
       await persist()
     },
 
+    /**
+     * 批量修改标的主数据（资产页批量模式）
+     * - targets: [{ market, code }]，按 (market, code) 定位 stocks 行
+     * - patch 只写传了的字段：tag / purpose / broker；tag 传数组会按单选语义整体替换
+     * - syncTrades: 券商圈选连带迁移这些标的的全部交易记录
+     * - syncCash: 连带迁移与这些交易配对的「初始建仓」自动入金（cash_flows.ref_id → trades.id），
+     *   因为现金是按券商分账的，只迁交易不迁入金会让目的券商的可用资金算成负数
+     * 返回实际影响的对象数量，供上层做结果提示
+     */
+    async bulkUpdateStocks({ targets, patch = {}, syncTrades = false, syncCash = false }) {
+      const list = (targets || []).filter((t) => t && t.market && t.code)
+      if (!list.length) return { stocks: 0, trades: 0, flows: 0 }
+      let affectedTrades = 0
+      let affectedFlows = 0
+      try {
+        run('BEGIN')
+        for (const t of list) {
+          const fields = []
+          const vals = []
+          if (Array.isArray(patch.tag)) {
+            fields.push('tag = ?')
+            vals.push(JSON.stringify(patch.tag))
+          }
+          if (patch.purpose !== undefined) {
+            fields.push('purpose = ?')
+            vals.push(patch.purpose || '')
+          }
+          if (patch.broker) {
+            fields.push('broker = ?')
+            vals.push(patch.broker)
+          }
+          if (!fields.length) continue
+          vals.push(t.market, t.code)
+          run(`UPDATE stocks SET ${fields.join(', ')} WHERE market = ? AND code = ?`, vals)
+        }
+        if (patch.broker && syncTrades) {
+          for (const t of list) {
+            run('UPDATE trades SET broker = ? WHERE market = ? AND code = ?', [
+              patch.broker,
+              t.market,
+              t.code
+            ])
+            affectedTrades += this._changes()
+          }
+        }
+        if (patch.broker && syncCash) {
+          // 只迁「跟着这笔买入走的钱」：ref_id 指向这些交易的那笔初始建仓入金
+          for (const t of list) {
+            const rows = all(
+              'SELECT id FROM trades WHERE market = ? AND code = ?',
+              [t.market, t.code]
+            )
+            for (const r of rows) {
+              run('UPDATE cash_flows SET broker = ? WHERE ref_id = ?', [patch.broker, r.id])
+              affectedFlows += this._changes()
+            }
+          }
+        }
+        run('COMMIT')
+      } catch (e) {
+        try { run('ROLLBACK') } catch {}
+        throw e
+      }
+      await this.loadData()
+      markDirty()
+      await persist()
+      return { stocks: list.length, trades: affectedTrades, flows: affectedFlows }
+    },
+
+    // sql.js 的 run 不返回受影响行数，用 changes() 读取（批量场景需要真实计数）
+    _changes() {
+      try {
+        const row = get('SELECT changes() AS n')
+        return Number(row?.n) || 0
+      } catch {
+        return 0
+      }
+    },
+
     // 删除股票：连同其全部交易记录一起删除
     async deleteStock(market, code) {
       run('DELETE FROM trades WHERE market = ? AND code = ?', [market, code])
