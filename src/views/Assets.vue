@@ -8,13 +8,11 @@ import { fmtMoney, fmtPct, pnlClass, fmtTime, parseTags } from '../utils/format'
 import { matchPosition, normKeyword } from '../utils/search'
 import PullRefresh from '../components/PullRefresh.vue'
 import PositionCard from '../components/PositionCard.vue'
-import TradeForm from '../components/TradeForm.vue'
 import BatchEditSheet from '../components/BatchEditSheet.vue'
 
 const router = useRouter()
 
 const portfolio = usePortfolioStore()
-const tradeVisible = ref(false)
 
 // 标签分组折叠状态：持久化到 localStorage，记住用户最后保持的展开/折叠
 const TAG_FOLD_KEY = 'sl-assets-tagFold'
@@ -42,6 +40,24 @@ const totalCost = computed(() => portfolio.positions.reduce((a, p) => a + p.avgC
 const brokerRows = computed(() =>
   portfolio.brokers.map((b) => ({ name: b, balance: (totals.value.brokerCash || {})[b] || 0 }))
 )
+// 券商分组的折叠状态与标签分组同一套交互，单独持久化：记住用户最后的展开/收起
+const BROKER_FOLD_KEY = 'sl-assets-brokerFold'
+function loadBrokerFold() {
+  try {
+    return localStorage.getItem(BROKER_FOLD_KEY) === '1'
+  } catch {
+    return true
+  }
+}
+const brokerCollapsed = ref(loadBrokerFold())
+function toggleBroker() {
+  brokerCollapsed.value = !brokerCollapsed.value
+  try {
+    localStorage.setItem(BROKER_FOLD_KEY, brokerCollapsed.value ? '1' : '0')
+  } catch {
+    /* 忽略存储失败（如隐私模式） */
+  }
+}
 
 // 持仓查找：名称 / 代码 / 标签 / 用途 / 券商
 const keyword = ref('')
@@ -294,29 +310,45 @@ async function applyBatch(patch) {
     <div v-else class="empty-tip">
       <div class="icon"><el-icon :size="40"><Box /></el-icon></div>
       <div>暂无持仓</div>
-      <div class="muted">点击右下角按钮，记录第一笔交易</div>
+      <div class="muted">点击右下角按钮，新增股票或券商账户</div>
     </div>
 
-    <!-- 券商：各账户现金一览，点进资金账户页 -->
-    <div v-if="!batchMode" class="card broker-bar" @click="router.push('/cash')">
-      <div class="row between">
-        <div class="row gap8">
-          <span class="section-title" style="margin-bottom: 0">券商</span>
-          <span class="muted">现金合计 {{ fmtMoney(totals.cash, 2) }}</span>
-        </div>
-        <el-icon :size="16" style="color: #94a3b8"><ArrowRight /></el-icon>
-      </div>
-      <div class="broker-chips">
-        <span v-for="b in brokerRows" :key="b.name" class="broker-chip">
-          <span class="chip-name">{{ b.name }}</span>
-          <span class="chip-cash num" :class="{ down: b.balance < 0 }">{{ fmtMoney(b.balance, 0) }}</span>
+    <!-- 券商：与上方股票分组同款折叠，展开后显示各账户现金 -->
+    <div v-if="!batchMode" class="card broker-bar">
+      <div class="group-header" @click="toggleBroker">
+        <el-icon :class="{ flip: brokerCollapsed }"><ArrowDown /></el-icon>
+        <span class="group-name">券商</span>
+        <span class="group-count">{{ brokerRows.length }} 个</span>
+        <span class="group-stats">
+          <span class="group-stat">
+            <span class="muted">现金</span>
+            <span class="num">{{ fmtMoney(totals.cash, 0) }}</span>
+          </span>
         </span>
       </div>
+      <template v-if="!brokerCollapsed">
+        <div class="broker-chips">
+          <span
+            v-for="b in brokerRows"
+            :key="b.name"
+            class="broker-chip"
+            @click.stop="router.push('/cash')"
+          >
+            <span class="chip-name">{{ b.name }}</span>
+            <span class="chip-cash num" :class="{ down: b.balance < 0 }">{{ fmtMoney(b.balance, 0) }}</span>
+          </span>
+        </div>
+        <div class="broker-more" @click.stop="router.push('/cash')">
+          <span>资金流水与出入金</span>
+          <el-icon :size="14"><ArrowRight /></el-icon>
+        </div>
+      </template>
     </div>
   </PullRefresh>
 
+  <!-- 新增资产（股票建仓 / 券商账户）统一入口；普通记账在交易记录页与股票详情页 -->
   <div v-if="!batchMode" class="fab">
-    <el-button type="primary" circle size="large" @click="tradeVisible = true" title="记一笔">
+    <el-button type="primary" circle size="large" @click="router.push('/add-asset')" title="新增资产">
       <el-icon :size="22"><Plus /></el-icon>
     </el-button>
   </div>
@@ -329,7 +361,6 @@ async function applyBatch(patch) {
     </el-button>
   </div>
 
-  <TradeForm v-model="tradeVisible" />
   <BatchEditSheet
     v-model="batchVisible"
     :count="selectedList.length"
@@ -399,17 +430,29 @@ async function applyBatch(patch) {
 :deep(.el-button--small) {
   font-size: 11px;
 }
-/* 底部券商行：各账户现金一览，点整行进资金账户页 */
+/* 底部券商分组：与上方股票分组同款折叠，展开后显示各账户现金 */
 .broker-bar {
-  padding: 12px 14px;
-  cursor: pointer;
+  padding: 4px 0 6px;
 }
 .broker-chips {
   display: flex;
   gap: 8px;
-  margin-top: 10px;
+  margin: 2px 14px 8px;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
+}
+.broker-chip {
+  cursor: pointer;
+}
+.broker-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 14px;
+  font-size: 12px;
+  color: var(--primary);
+  cursor: pointer;
 }
 .broker-chip {
   flex: none;

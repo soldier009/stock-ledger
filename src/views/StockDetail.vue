@@ -1,7 +1,8 @@
 <script setup>
-import { ref, computed, reactive, nextTick } from 'vue'
+import { ref, computed, reactive, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import dayjs from 'dayjs'
 import { usePortfolioStore } from '../stores/portfolio'
 import { useSettingsStore } from '../stores/settings'
 import { computeAll } from '../services/calc'
@@ -152,6 +153,102 @@ async function delTrade(t) {
   }
 }
 
+// ===== 快捷交易：详情页内直接买卖，不必打开完整表单 =====
+const quickOpen = ref(true)
+const quick = reactive({
+  type: 'buy',
+  mode: 'shares', // shares = 按份额输入；amount = 按金额输入（按现价折算股数）
+  date: dayjs().format('YYYY-MM-DD'),
+  shares: null,
+  price: null, // 留空 = 用现价
+  amount: null,
+  fee: 0,
+  tax: 0,
+  broker: '',
+  note: ''
+})
+// 券商默认跟随股票的所属账户
+watch(broker, (b) => {
+  if (!quick.broker) quick.broker = b
+}, { immediate: true })
+
+const quote = computed(() => portfolio.quotes[market + ':' + code] || null)
+const quotePrice = computed(() => (quote.value && quote.value.price) || 0)
+// 成交价：手填优先，留空则取现价
+const effPrice = computed(() => Number(quick.price) || quotePrice.value || 0)
+const priceFromQuote = computed(() => !Number(quick.price) && quotePrice.value > 0)
+
+// 按金额买入时按现价折算股数：A股没有碎股取整，港美股保留 3 位
+const quickShares = computed(() => {
+  if (quick.mode !== 'amount') return Number(quick.shares) || 0
+  if (!effPrice.value) return 0
+  const raw = (Number(quick.amount) || 0) / effPrice.value
+  return market === 'A' ? Math.round(raw) : Math.round(raw * 1000) / 1000
+})
+const quickGross = computed(() => quickShares.value * effPrice.value)
+// 买入：应付总额（+费用）；卖出：实际到账（-费用-税）
+const quickTotal = computed(() => {
+  const fee = Number(quick.fee) || 0
+  const tax = Number(quick.tax) || 0
+  return quick.type === 'buy' ? quickGross.value + fee + tax : quickGross.value - fee - tax
+})
+
+const brokerBalance = computed(() => (portfolio.totals.brokerCash || {})[quick.broker] || 0)
+const cashShort = computed(() => quick.type === 'buy' && quickTotal.value > brokerBalance.value + 1e-6)
+const overSell = computed(() => quick.type === 'sell' && quickShares.value > (hold.value?.shares || 0) + 1e-6)
+const amountDisabled = computed(() => !effPrice.value)
+const sharePrecision = computed(() => (market === 'A' ? 0 : 3))
+
+// A股卖出自动带出印花税（与完整表单同一口径），只在未手填时补
+watch(
+  () => [quick.type, quickShares.value, effPrice.value],
+  () => {
+    if (quick.type === 'sell' && market === 'A' && Number(quick.tax) === 0) {
+      quick.tax = Math.round(quickShares.value * effPrice.value * (settings.stampTaxRate || 0.0005) * 100) / 100
+    }
+  }
+)
+
+const quickSubmitting = ref(false)
+async function submitQuick() {
+  if (!quick.date) return ElMessage.warning('请选择日期')
+  if (quickShares.value <= 0) return ElMessage.warning(quick.mode === 'amount' ? '请输入买入金额' : '请输入数量')
+  if (!effPrice.value)
+    return ElMessage.warning(priceFromQuote.value ? '未能获取现价，请手填成交价' : '请输入成交价')
+  if (overSell.value) {
+    return ElMessage.warning(`最多可卖 ${fmtShares(hold.value?.shares || 0, market)} 股，当前超出持仓`)
+  }
+  quickSubmitting.value = true
+  try {
+    await portfolio.addTrade({
+      date: quick.date,
+      market,
+      code,
+      name: name.value,
+      type: quick.type,
+      shares: quickShares.value,
+      price: effPrice.value,
+      fee: Number(quick.fee) || 0,
+      tax: Number(quick.tax) || 0,
+      amount: 0,
+      note: quick.note.trim(),
+      tag: [...tags.value],
+      purpose: stock.value?.purpose || '',
+      broker: quick.broker || broker.value
+    })
+    ElMessage.success(quick.type === 'buy' ? '已记录买入' : '已记录卖出')
+    Object.assign(quick, { shares: null, amount: null, price: null, fee: 0, tax: 0, note: '' })
+  } finally {
+    quickSubmitting.value = false
+  }
+}
+
+// 交易记录分区：日常买卖 vs 分红/送股/配股（后者单独一个区块 + 专用添加按钮）
+const tradeRows = computed(() => stockTrades.value.filter((t) => t.type === 'buy' || t.type === 'sell'))
+const incomeRows = computed(() =>
+  stockTrades.value.filter((t) => t.type === 'div' || t.type === 'gift' || t.type === 'rights')
+)
+
 function tradeAmount(t) {
   if (t.type === 'div') return t.amount
   if (t.type === 'gift') return null
@@ -242,6 +339,119 @@ function syncPurposes(v) {
       </div>
     </div>
 
+    <!-- 快捷交易：详情页内直接买卖 -->
+    <div class="card quick-card">
+      <div class="row between" @click="quickOpen = !quickOpen">
+        <span class="section-title" style="margin: 0">快捷交易</span>
+        <el-icon :class="{ flip: !quickOpen }"><ArrowDown /></el-icon>
+      </div>
+
+      <template v-if="quickOpen">
+        <el-radio-group v-model="quick.type" class="seg-group" size="small">
+          <el-radio-button value="buy">买入</el-radio-button>
+          <el-radio-button value="sell">卖出</el-radio-button>
+        </el-radio-group>
+        <el-radio-group v-model="quick.mode" class="seg-group" size="small" style="margin-top: 8px">
+          <el-radio-button value="shares">按份额</el-radio-button>
+          <el-radio-button value="amount" :disabled="amountDisabled">按金额</el-radio-button>
+        </el-radio-group>
+        <div v-if="quick.mode === 'amount' && amountDisabled" class="muted" style="margin-top: 4px">
+          未获取到现价，请手填成交价或改用「按份额」
+        </div>
+
+        <div class="q-grid">
+          <div>
+            <div class="muted">日期</div>
+            <el-date-picker
+              v-model="quick.date"
+              type="date"
+              value-format="YYYY-MM-DD"
+              size="small"
+              :editable="false"
+              style="width: 100%"
+            />
+          </div>
+          <div>
+            <div class="muted">{{ quick.mode === 'amount' ? '金额（元）' : '数量（股）' }}</div>
+            <el-input-number
+              v-if="quick.mode === 'amount'"
+              v-model="quick.amount"
+              :min="0"
+              :precision="2"
+              :controls="false"
+              size="small"
+              placeholder="金额"
+              style="width: 100%"
+            />
+            <el-input-number
+              v-else
+              v-model="quick.shares"
+              :min="0"
+              :precision="sharePrecision"
+              :controls="false"
+              size="small"
+              placeholder="股数"
+              style="width: 100%"
+            />
+          </div>
+          <div>
+            <div class="muted">成交价（留空用现价）</div>
+            <el-input-number
+              v-model="quick.price"
+              :min="0"
+              :precision="4"
+              :controls="false"
+              size="small"
+              :placeholder="quotePrice ? String(quotePrice) : '现价'"
+              style="width: 100%"
+            />
+          </div>
+          <div>
+            <div class="muted">手续费</div>
+            <el-input-number v-model="quick.fee" :min="0" :precision="2" :controls="false" size="small" style="width: 100%" />
+          </div>
+          <div>
+            <div class="muted">税费</div>
+            <el-input-number v-model="quick.tax" :min="0" :precision="2" :controls="false" size="small" style="width: 100%" />
+          </div>
+          <div>
+            <div class="muted">{{ quick.type === 'buy' ? '扣款账户' : '到账账户' }}</div>
+            <el-select v-model="quick.broker" size="small" style="width: 100%">
+              <el-option v-for="b in portfolio.brokers" :key="b" :label="b" :value="b" />
+            </el-select>
+            <div class="muted" style="margin-top: 2px">可用 {{ fmtMoney(brokerBalance, 2) }}</div>
+          </div>
+        </div>
+
+        <div v-if="quickGross > 0" class="q-preview num">
+          <span v-if="quick.mode === 'amount'">约 </span>
+          {{ fmtShares(quickShares, market) }} 股 × {{ fmtNum(effPrice, 3) }} ＝
+          <b>{{ quick.type === 'buy' ? '应付' : '到账' }} {{ fmtMoney(quickTotal, 2) }}</b>
+        </div>
+        <div v-if="cashShort" class="short-warn">
+          「{{ quick.broker }}」现金不足，保存后该账户余额将为负（{{ fmtMoney(brokerBalance - quickTotal, 2) }}）。
+          可先到资金账户页给该账户补一笔入金。
+        </div>
+        <div v-if="overSell" class="short-warn">
+          超出当前持仓 {{ fmtShares(hold?.shares || 0, market) }} 股，请先修正数量。
+        </div>
+
+        <el-button
+          type="primary"
+          class="q-submit"
+          size="large"
+          :loading="quickSubmitting"
+          :disabled="overSell"
+          @click="submitQuick"
+        >
+          保存{{ quick.type === 'buy' ? '买入' : '卖出' }}记录
+        </el-button>
+        <div class="muted" style="text-align: center; margin-top: 6px">
+          分红 / 送股 / 配股请在下方「分红 / 送股 / 配股」区添加
+        </div>
+      </template>
+    </div>
+
     <!-- 累计已实现盈亏 -->
     <div v-if="stat.totalRealized" class="card hold-card">
       <div class="row between">
@@ -252,15 +462,55 @@ function syncPurposes(v) {
       </div>
     </div>
 
-    <!-- 交易记录 -->
+    <!-- 分红 / 送股 / 配股：独立区块 + 专用添加按钮 -->
     <div class="trade-section">
       <div class="row between" style="padding: 4px 2px">
-        <span class="section-title" style="margin: 0">交易记录（{{ stockTrades.length }}）</span>
-        <el-button size="small" type="primary" @click="openAdd">记一笔</el-button>
+        <span class="section-title" style="margin: 0">分红 / 送股 / 配股（{{ incomeRows.length }}）</span>
+        <el-button class="plus-btn" type="primary" circle size="small" @click="openAdd">
+          <el-icon><Plus /></el-icon>
+        </el-button>
+      </div>
+      <template v-if="incomeRows.length">
+        <div v-for="t in incomeRows" :key="t.id" class="card trade-item">
+          <div class="row between">
+            <div class="row gap8">
+              <span class="type-badge" :class="typeClass(t)">{{ typeLabel(t.type) }}</span>
+              <span class="muted">{{ t.date }}</span>
+            </div>
+            <div class="row gap8">
+              <el-icon class="act" @click="openEdit(t)"><Edit /></el-icon>
+              <el-icon class="act" @click="delTrade(t)"><Delete /></el-icon>
+            </div>
+          </div>
+          <div class="muted num t-detail">
+            <template v-if="t.type === 'div'">
+              分红 ¥{{ fmtNum(t.amount, 2) }}
+            </template>
+            <template v-else-if="t.type === 'gift'">
+              送股 {{ fmtShares(t.shares, market) }} 股
+            </template>
+            <template v-else>
+              配股 {{ fmtShares(t.shares, market) }} 股 × {{ fmtNum(t.price, 3) }}
+            </template>
+            <span v-if="t.note" style="margin-left: 8px">{{ t.note }}</span>
+          </div>
+        </div>
+      </template>
+      <div v-else class="empty-tip">
+        <div class="icon">📄</div>
+        <div>暂无分红 / 送股 / 配股记录</div>
+        <div class="muted">点右上角 ＋ 添加</div>
+      </div>
+    </div>
+
+    <!-- 交易记录（买卖） -->
+    <div class="trade-section">
+      <div class="row between" style="padding: 4px 2px">
+        <span class="section-title" style="margin: 0">交易记录（{{ tradeRows.length }}）</span>
       </div>
 
-      <template v-if="stockTrades.length">
-        <div v-for="t in stockTrades" :key="t.id" class="card trade-item">
+      <template v-if="tradeRows.length">
+        <div v-for="t in tradeRows" :key="t.id" class="card trade-item">
           <div class="row between">
             <div class="row gap8">
               <span class="type-badge" :class="typeClass(t)">{{ typeLabel(t.type) }}</span>
@@ -293,8 +543,8 @@ function syncPurposes(v) {
       </template>
       <div v-else class="empty-tip">
         <div class="icon">📄</div>
-        <div>暂无交易记录</div>
-        <div class="muted">点击「记一笔」添加</div>
+        <div>暂无买卖记录</div>
+        <div class="muted">买入 / 卖出请用上方「快捷交易」</div>
       </div>
     </div>
   </div>
@@ -391,6 +641,64 @@ function syncPurposes(v) {
 }
 .hold-card .row {
   padding: 5px 0;
+}
+.quick-card {
+  padding: 12px 14px;
+}
+.quick-card .flip {
+  transform: rotate(-90deg);
+}
+.quick-card .el-icon {
+  transition: transform 0.2s;
+}
+.seg-group {
+  display: flex;
+  width: 100%;
+  margin-top: 10px;
+}
+.seg-group :deep(.el-radio-button) {
+  flex: 1;
+}
+.seg-group :deep(.el-radio-button__inner) {
+  width: 100%;
+}
+.q-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 12px;
+}
+.q-grid .muted {
+  margin-bottom: 4px;
+}
+.q-preview {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f0fdf9;
+  font-size: 13px;
+}
+.q-preview b {
+  color: var(--primary);
+  font-size: 15px;
+}
+.short-warn {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fff7ed;
+  color: #b45309;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.q-submit {
+  width: 100%;
+  margin-top: 12px;
+}
+.plus-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
 }
 .section-title {
   font-size: 16px;

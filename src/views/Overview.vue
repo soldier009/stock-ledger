@@ -7,14 +7,12 @@ import { usePortfolioStore } from '../stores/portfolio'
 import { fmtMoney, fmtNum, fmtShares, fmtPct, pnlClass, marketLabel, fmtTime, assetClass, assetClassLabel } from '../utils/format'
 import { holdingDayDetail } from '../services/calc'
 import { groupBy, PALETTE, CASH_COLOR } from '../utils/composition'
-import InitPositionForm from '../components/InitPositionForm.vue'
 import NetWorthCurve from '../components/NetWorthCurve.vue'
 import ClosedRounds from '../components/ClosedRounds.vue'
 import DonutChart from '../components/DonutChart.vue'
 
 const portfolio = usePortfolioStore()
 const router = useRouter()
-const showInit = ref(false)
 const showCurve = ref(false)
 const showClosed = ref(false)
 const showMoney = ref(true)
@@ -318,7 +316,7 @@ onMounted(() => {
       <div class="row between" style="margin-bottom: 8px; align-items: center">
         <div class="row gap8" @click.stop>
           <span class="section-title">净资产</span>
-          <el-button type="primary" size="small" round @click="showInit = true">＋ 新建仓</el-button>
+          <el-button type="primary" size="small" round @click="router.push('/add-asset')">＋ 新增资产</el-button>
         </div>
         <div class="row gap8" style="align-items: center; color: var(--text-2)">
           <el-icon
@@ -706,7 +704,6 @@ onMounted(() => {
       </div>
     </el-drawer>
 
-    <InitPositionForm v-model="showInit" />
   </div>
 </template>
 

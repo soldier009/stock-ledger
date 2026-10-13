@@ -28,7 +28,7 @@ const lookupError = ref('')
 const tagSelect = ref(null)
 
 const form = reactive({
-  type: 'buy',
+  type: 'div',
   market: 'A',
   code: '',
   name: '',
@@ -73,7 +73,7 @@ watch(visible, (v) => {
     title.value = '记一笔'
     if (props.preset) {
       Object.assign(form, {
-        type: 'buy',
+        type: 'div',
         market: props.preset.market || 'A',
         code: props.preset.code || '',
         name: props.preset.name || '',
@@ -142,11 +142,17 @@ const typeOptions = [
   { label: '配股', value: 'rights' }
 ]
 
+// 新增时只提供分红 / 送股 / 配股：买入 / 卖出已改到股票详情页的「快捷交易」，
+// 建仓走「新增资产 › 股票」，避免同一个动作有两个入口、口径分散；
+// 编辑时不限制——所有类型都能改，由用户自己负责口径
+const baseTypeOptions = typeOptions.filter((o) => o.value !== 'buy' && o.value !== 'sell')
+
 // 「新建仓」补录的记录恒定是买入：它天然绑定了一笔自动入金作为资金来源，
 // 改成卖出/分红会让这笔入金失去对应含义（成本、本金口径都会错），故禁止改类型
 const lockType = computed(() => !!props.trade && props.trade.origin === 'initial')
-// 加锁时类型下拉只剩「买入」，不让用户点到其他选项
-const shownTypeOptions = computed(() => (lockType.value ? typeOptions.filter((o) => o.value === 'buy') : typeOptions))
+const shownTypeOptions = computed(() =>
+  lockType.value ? typeOptions.filter((o) => o.value === 'buy') : props.trade ? typeOptions : baseTypeOptions
+)
 
 watch(
   () => form.type,
@@ -287,7 +293,7 @@ async function submit() {
 function reset() {
   lookupError.value = ''
   Object.assign(form, {
-    type: 'buy',
+    type: 'div',
     market: 'A',
     code: '',
     name: '',
@@ -314,6 +320,9 @@ function reset() {
         </el-radio-group>
         <div v-if="lockType" class="muted" style="margin-top: 4px">
           建仓记录固定为买入（可在下方改数量/价格/日期，自动入金会同步）。如需换成其他类型，请先删除该建仓记录，再另行记账
+        </div>
+        <div v-else-if="!props.trade" class="muted" style="margin-top: 4px">
+          仅记录分红 / 送股 / 配股；买入与卖出请在股票详情页的「快捷交易」中操作（新建仓走「＋ 新增资产」）
         </div>
       </el-form-item>
 

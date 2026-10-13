@@ -587,10 +587,12 @@ export const usePortfolioStore = defineStore('portfolio', {
       this.syncKlines()
     },
 
-    // 初始建仓：录入使用本软件之前已持有的股票
-    // 与「记录买入」的区别：同时自动生成一笔等额入金记录，
-    // 使现金不变、本金增加，净资产/总盈亏/收益率均正确（等价于当初用这笔钱买入）
-    async addInitialPosition({ date, market, code, name, shares, costPrice, broker, note, tag, purpose }) {
+    // 录入一只股票（「新增资产 › 股票」）
+    // fund 决定这笔买入的钱从哪来：
+    //   'auto'（默认，补录历史持仓）：同时自动生成一笔等额入金记录，使现金不变、本金增加，
+    //         净资产/总盈亏/收益率均正确（等价于当初用这笔钱买入），并在净资产曲线上并入起点
+    //   'cash'（关联扣款账户，真实买入）：记为一笔普通买入，从该券商现金里扣，不生成入金
+    async addInitialPosition({ date, market, code, name, shares, costPrice, broker, note, tag, purpose, fund }) {
       const qty = Number(shares) || 0
       const price = Number(costPrice) || 0
       const cost = Math.round(qty * price * 100) / 100
@@ -598,24 +600,27 @@ export const usePortfolioStore = defineStore('portfolio', {
       const tagArr = Array.isArray(tag) ? tag.filter(Boolean) : []
       const tagStr = JSON.stringify(tagArr)
       const purposeStr = String(purpose || '')
+      const fromCash = fund === 'cash'
       run(
         'INSERT INTO trades (date, market, code, name, type, shares, price, fee, tax, amount, note, broker, origin) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
-        [date, market, code, name || '', 'buy', qty, price, 0, 0, 0, note || '', b, 'initial']
+        [date, market, code, name || '', 'buy', qty, price, 0, 0, 0, note || '', b, fromCash ? '' : 'initial']
       )
-      // 入金记录用 ref_id 指向刚插入的买入记录，之后改期/改金额/删除都靠它精确定位
-      const rowOf = get('SELECT MAX(id) AS id FROM trades')
-      run(
-        'INSERT INTO cash_flows (date, type, amount, note, broker, origin, ref_id) VALUES (?,?,?,?,?,?,?)',
-        [
-          date,
-          'deposit',
-          cost,
-          `初始建仓-自动入金（${name || code}）`,
-          b,
-          'initial',
-          rowOf ? rowOf.id : null
-        ]
-      )
+      if (!fromCash) {
+        // 入金记录用 ref_id 指向刚插入的买入记录，之后改期/改金额/删除都靠它精确定位
+        const rowOf = get('SELECT MAX(id) AS id FROM trades')
+        run(
+          'INSERT INTO cash_flows (date, type, amount, note, broker, origin, ref_id) VALUES (?,?,?,?,?,?,?)',
+          [
+            date,
+            'deposit',
+            cost,
+            `初始建仓-自动入金（${name || code}）`,
+            b,
+            'initial',
+            rowOf ? rowOf.id : null
+          ]
+        )
+      }
       const exist = get('SELECT id FROM stocks WHERE market = ? AND code = ?', [market, code])
       if (exist) {
         if (name) run('UPDATE stocks SET name = ? WHERE id = ?', [name, exist.id])

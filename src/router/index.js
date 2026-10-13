@@ -6,6 +6,7 @@ const routes = [
   { path: '/analysis', name: 'analysis', component: () => import('../views/Analysis.vue') },
   { path: '/trades', name: 'trades', component: () => import('../views/Trades.vue') },
   { path: '/cash', name: 'cash-accounts', component: () => import('../views/CashAccounts.vue') },
+  { path: '/add-asset', name: 'add-asset', component: () => import('../views/AddAsset.vue') },
   { path: '/settings', name: 'settings', component: () => import('../views/Settings.vue') },
   { path: '/composition', name: 'composition', component: () => import('../views/Composition.vue') },
   { path: '/pnl', name: 'pnl-breakdown', component: () => import('../views/PnlBreakdown.vue') },
