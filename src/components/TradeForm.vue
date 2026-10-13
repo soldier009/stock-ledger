@@ -53,7 +53,8 @@ watch(visible, (v) => {
     const t = props.trade
     const st = portfolio.stocks.find((s) => s.market === t.market && s.code === t.code)
     Object.assign(form, {
-      type: t.type,
+      // 建仓记录只能是买入（下同端口径由 store 兜底拦截）
+      type: t.origin === 'initial' ? 'buy' : t.type,
       market: t.market,
       code: t.code,
       name: st?.name || t.name || '',
@@ -140,6 +141,12 @@ const typeOptions = [
   { label: '送股', value: 'gift' },
   { label: '配股', value: 'rights' }
 ]
+
+// 「新建仓」补录的记录恒定是买入：它天然绑定了一笔自动入金作为资金来源，
+// 改成卖出/分红会让这笔入金失去对应含义（成本、本金口径都会错），故禁止改类型
+const lockType = computed(() => !!props.trade && props.trade.origin === 'initial')
+// 加锁时类型下拉只剩「买入」，不让用户点到其他选项
+const shownTypeOptions = computed(() => (lockType.value ? typeOptions.filter((o) => o.value === 'buy') : typeOptions))
 
 watch(
   () => form.type,
@@ -303,8 +310,11 @@ function reset() {
     <el-form label-position="top" size="large">
       <el-form-item label="交易类型">
         <el-radio-group v-model="form.type" class="type-group">
-          <el-radio-button v-for="o in typeOptions" :key="o.value" :value="o.value">{{ o.label }}</el-radio-button>
+          <el-radio-button v-for="o in shownTypeOptions" :key="o.value" :value="o.value">{{ o.label }}</el-radio-button>
         </el-radio-group>
+        <div v-if="lockType" class="muted" style="margin-top: 4px">
+          建仓记录固定为买入（可在下方改数量/价格/日期，自动入金会同步）。如需换成其他类型，请先删除该建仓记录，再另行记账
+        </div>
       </el-form-item>
 
       <!-- 详情页记一笔：证券已锁定，仅作展示，供确认记账对象 -->

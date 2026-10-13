@@ -109,8 +109,14 @@ onBeforeUnmount(() => {
 
 watch(() => settings.refreshMinutes, () => startQuoteTimer())
 
+// 只在「条数」变化时备份会漏掉纯编辑（改金额/日期不改条数），因此再拼一个内容指纹
 watch(
-  () => [portfolio.trades.length, portfolio.cashFlows.length],
+  () => [
+    portfolio.trades.length,
+    portfolio.cashFlows.length,
+    portfolio.trades.map((t) => `${t.id}|${t.date}|${t.shares}|${t.price}|${t.amount}|${t.fee}|${t.tax}`).join(','),
+    portfolio.cashFlows.map((c) => `${c.id}|${c.date}|${c.type}|${c.amount}|${c.note}|${c.broker}`).join(',')
+  ],
   () => debouncedBackup()
 )
 </script>

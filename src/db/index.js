@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS cash_flows (
   amount REAL NOT NULL,
   note TEXT DEFAULT '',
   broker TEXT DEFAULT '',
-  origin TEXT DEFAULT ''
+  origin TEXT DEFAULT '',
+  ref_id INTEGER DEFAULT NULL
 );
 CREATE TABLE IF NOT EXISTS trades (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,6 +84,9 @@ function migrate() {
   // 初始建仓标记列（老库无此列时补列）
   try { run('ALTER TABLE trades ADD COLUMN origin TEXT DEFAULT ""') } catch {}
   try { run('ALTER TABLE cash_flows ADD COLUMN origin TEXT DEFAULT ""') } catch {}
+  // ref_id 指向 trades.id：「新建仓」自动生成的入金记录，用这一列精确定位它对应的买入记录，
+  // 使两边联动（改金额 / 改日期 / 删除）不再依赖「金额 + 日期」猜测
+  try { run('ALTER TABLE cash_flows ADD COLUMN ref_id INTEGER DEFAULT NULL') } catch {}
   // 确保至少存在一个券商账户
   const cnt = get('SELECT COUNT(*) AS c FROM brokers')
   if (!cnt || cnt.c === 0) run('INSERT INTO brokers (name) VALUES (?)', [DEFAULT_BROKER])
@@ -140,6 +144,57 @@ function migrate() {
     if (!hit) continue
     run("UPDATE trades SET origin = 'initial' WHERE id = ?", [hit.id])
     run("UPDATE cash_flows SET origin = 'initial' WHERE id = ?", [c.id])
+  }
+
+  // ===== 回填 ref_id：给历史上已配对的「新建仓入金 ↔ 买入记录」补上外键 =====
+  // 新建仓时会同时生成一条买入和一笔入金，二者必须成对联动。早期数据只靠
+  // 「金额吻合 + 同券商 + 日期相近 + 备注里的代码/名称」猜测配对，一旦用户改了
+  // 买入金额而入金没跟上，双方金额不再相等，以后就再也配不上了。
+  // 这里做一次性回填，之后所有联动都按 ref_id 精确定位；配不上对的继续保持原状，
+  // 由 store 的兜底逻辑处理（不会误改数据）。
+  const costOf = (t) =>
+    (Number(t.price) || 0) * (Number(t.shares) || 0) + (Number(t.fee) || 0) + (Number(t.tax) || 0)
+  const amountEq = (t, amt) => Math.abs(costOf(t) - amt) <= 0.011
+  const noteToken = (note) => {
+    const s = String(note || '')
+    const open = s.indexOf('（')
+    const close = s.lastIndexOf('）')
+    return open >= 0 && close > open ? s.slice(open + 1, close).trim() : ''
+  }
+  const linked = new Set(
+    all('SELECT DISTINCT ref_id AS r FROM cash_flows WHERE ref_id IS NOT NULL AND ref_id <> 0').map((x) => x.r)
+  )
+  const orphanFlows = all(
+    "SELECT id, date, broker, note, amount FROM cash_flows " +
+      "WHERE type = 'deposit' AND (origin = 'initial' OR note LIKE '初始建仓-自动入金（%') " +
+      "AND (ref_id IS NULL OR ref_id = 0) ORDER BY id"
+  )
+  for (const c of orphanFlows) {
+    const amt = Number(c.amount) || 0
+    if (amt <= 0) continue
+    const token = noteToken(c.note)
+    // 取前后 7 天窗口内的初始建仓买入，覆盖买入改期而入金未联动的情况
+    const buys = all(
+      "SELECT id, date, code, name, shares, price, fee, tax FROM trades " +
+        "WHERE type IN ('buy', 'rights') AND origin = 'initial' AND broker = ? " +
+        "AND date BETWEEN date(?, '-7 days') AND date(?, '+7 days') ORDER BY date, id",
+      [c.broker, c.date, c.date]
+    ).filter((t) => !linked.has(t.id))
+    if (!buys.length) continue
+    const tokenMatches = (t) => token && (token === t.code || token === String(t.name || '').trim())
+    const cands = buys.filter((t) => amountEq(t, amt))
+    let hit = cands.find((t) => t.date === c.date && tokenMatches(t))
+    if (!hit) {
+      const sameDay = cands.filter((t) => t.date === c.date)
+      if (sameDay.length === 1) hit = sameDay[0]
+    }
+    if (!hit) {
+      const near = buys.filter((t) => amountEq(t, amt) && tokenMatches(t))
+      if (near.length === 1) hit = near[0]
+    }
+    if (!hit) continue
+    run('UPDATE cash_flows SET ref_id = ? WHERE id = ?', [hit.id, c.id])
+    linked.add(hit.id)
   }
 }
 

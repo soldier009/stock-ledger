@@ -602,14 +602,20 @@ export const usePortfolioStore = defineStore('portfolio', {
         'INSERT INTO trades (date, market, code, name, type, shares, price, fee, tax, amount, note, broker, origin) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
         [date, market, code, name || '', 'buy', qty, price, 0, 0, 0, note || '', b, 'initial']
       )
-      run('INSERT INTO cash_flows (date, type, amount, note, broker, origin) VALUES (?,?,?,?,?,?)', [
-        date,
-        'deposit',
-        cost,
-        `初始建仓-自动入金（${name || code}）`,
-        b,
-        'initial'
-      ])
+      // 入金记录用 ref_id 指向刚插入的买入记录，之后改期/改金额/删除都靠它精确定位
+      const rowOf = get('SELECT MAX(id) AS id FROM trades')
+      run(
+        'INSERT INTO cash_flows (date, type, amount, note, broker, origin, ref_id) VALUES (?,?,?,?,?,?,?)',
+        [
+          date,
+          'deposit',
+          cost,
+          `初始建仓-自动入金（${name || code}）`,
+          b,
+          'initial',
+          rowOf ? rowOf.id : null
+        ]
+      )
       const exist = get('SELECT id FROM stocks WHERE market = ? AND code = ?', [market, code])
       if (exist) {
         if (name) run('UPDATE stocks SET name = ? WHERE id = ?', [name, exist.id])
@@ -633,10 +639,15 @@ export const usePortfolioStore = defineStore('portfolio', {
       this.syncKlines()
     },
 
-    // 初始建仓自动生成的那笔入金（用于编辑日期/删除时联动，避免买入与入金日期错位）
-    // 优先按“同日+同券商+金额一致”精确匹配；老数据 origin 为空时靠备注前缀兜底
+    // 初始建仓自动生成的那笔入金（编辑 / 删除时联动）
+    // 首选按 ref_id 精确定位（新建仓时写入，老库由 migrate 一次性回填）；
+    // 没有 ref_id 的老数据才退化为“同日+同券商+金额一致”的启发式匹配
     _initialDeposit(t, fallbackDate = false) {
       if (!t) return null
+      if (t.id) {
+        const byRef = get('SELECT * FROM cash_flows WHERE ref_id = ?', [t.id])
+        if (byRef) return byRef
+      }
       const cost = Math.round(
         ((Number(t.price) || 0) * (Number(t.shares) || 0) + (Number(t.fee) || 0) + (Number(t.tax) || 0)) * 100
       ) / 100
@@ -660,18 +671,33 @@ export const usePortfolioStore = defineStore('portfolio', {
     // 编辑交易记录
     async updateTrade(id, t) {
       const broker = t.broker || this.defaultBroker
-      // 初始建仓（补录历史持仓）标记随交易保留：只要仍属买入/配股类建仓就保持 origin
       const oldT = get('SELECT * FROM trades WHERE id = ?', [id])
-      const keepInitial = !!(oldT && oldT.origin === 'initial' && (t.type === 'buy' || t.type === 'rights'))
+      // 建仓记录（补录历史持仓）恒定为买入：即使上层误传了别的类型也强制纠正。
+      // 一旦允许它变成卖出/分红，与之配对的自动入金就会失去资金来源的含义，
+      // 持仓成本、本金与已实现盈亏的口径会一起错乱
+      const keepInitial = !!(oldT && oldT.origin === 'initial')
+      const type = keepInitial ? 'buy' : t.type
       run(
         'UPDATE trades SET date=?, market=?, code=?, name=?, type=?, shares=?, price=?, fee=?, tax=?, amount=?, note=?, broker=?, origin=? WHERE id=?',
-        [t.date, t.market, t.code, t.name || '', t.type, t.shares || 0, t.price || 0, t.fee || 0, t.tax || 0, t.amount || 0, t.note || '', broker, keepInitial ? 'initial' : '', id]
+        [t.date, t.market, t.code, t.name || '', type, t.shares || 0, t.price || 0, t.fee || 0, t.tax || 0, t.amount || 0, t.note || '', broker, keepInitial ? 'initial' : '', id]
       )
-      // 初始建仓对应的自动入金：日期/券商随买入联动，避免“买入某日、入金另一日”的净资产虚增台阶
-      if (keepInitial && oldT) {
-        const cf = this._initialDeposit({ ...oldT, date: oldT.date }, false)
+      // 初始建仓对应的自动入金：与买入记录成对联动——
+      // 日期 / 券商 / 金额 / 备注（含股票名称）全部跟随，避免“买入某日、入金另一日”或
+      // “交易金额改了、入金还是老金额”导致的本金虚增错位
+      if (keepInitial) {
+        const cf = this._initialDeposit(oldT, true)
         if (cf) {
-          run('UPDATE cash_flows SET date = ?, broker = ?, origin = ? WHERE id = ?', [t.date, broker, 'initial', cf.id])
+          const cost = Math.round(
+            ((Number(t.shares) || 0) * (Number(t.price) || 0) + (Number(t.fee) || 0) + (Number(t.tax) || 0)) * 100
+          ) / 100
+          run('UPDATE cash_flows SET date = ?, broker = ?, amount = ?, note = ?, origin = ? WHERE id = ?', [
+            t.date,
+            broker,
+            cost,
+            `初始建仓-自动入金（${t.name || t.code}）`,
+            'initial',
+            cf.id
+          ])
         }
       }
       if (t.name) run('UPDATE stocks SET name = ? WHERE market = ? AND code = ?', [t.name, t.market, t.code])
@@ -783,6 +809,26 @@ export const usePortfolioStore = defineStore('portfolio', {
 
     async deleteCashFlow(id) {
       run('DELETE FROM cash_flows WHERE id = ?', [id])
+      await this.loadData()
+      markDirty()
+      await persist()
+    },
+
+    /**
+     * 修改一笔手动记录的资金出入。
+     * 只覆盖 date/type/amount/note/broker，不碰 origin：
+     * 编辑「新建仓」联动生成的入金是被禁止的（UI 层拦），
+     * 而 updateTrade / deleteTrade 对初始建仓的联动依赖 origin='initial'，这里绝不能改。
+     */
+    async updateCashFlow(id, c) {
+      run('UPDATE cash_flows SET date = ?, type = ?, amount = ?, note = ?, broker = ? WHERE id = ?', [
+        c.date,
+        c.type,
+        c.amount,
+        c.note || '',
+        c.broker || this.defaultBroker,
+        id
+      ])
       await this.loadData()
       markDirty()
       await persist()

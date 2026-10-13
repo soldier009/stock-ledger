@@ -344,23 +344,61 @@ function ddStartOfRange(key) {
   }
 }
 
-const ddFiltered = computed(() => {
+const ddScope = computed(() => {
   const start = ddStartOfRange(ddRange.value)
-  const end = ddRange.value === 'custom' && ddCustomEnd.value ? dayjs(ddCustomEnd.value) : null
-  return portfolio.netValue.filter((p) => {
+  const end = ddRange.value === 'custom' && ddCustomEnd.value ? dayjs(ddCustomEnd.value) : dayjs()
+  return { start, end }
+})
+
+/**
+ * 区间内的真实数据点。
+ * 净值曲线不是日历每天都打点（见 buildDailyAssets：事件日 + 持仓交易日 + 今天），
+ * 所以节假日那几天根本没有点。若起始日当天没有点，要补上起始日之前最近的一个点做基准，
+ * 否则「十一」这类长假跨期的下跌会被整个漏掉。
+ */
+const ddPoints = computed(() => {
+  const { start, end } = ddScope.value
+  const startKey = start.format('YYYY-MM-DD')
+  const pts = portfolio.netValue
+  let seed = null
+  for (const p of pts) {
+    if (p.date <= startKey) seed = p
+    else break
+  }
+  const inRange = pts.filter((p) => {
     const d = dayjs(p.date)
-    if (d.isBefore(start, 'day')) return false
-    if (end && d.isAfter(end, 'day')) return false
-    return true
+    return !d.isBefore(start, 'day') && !d.isAfter(end, 'day')
   })
+  return seed && inRange.length && inRange[0] !== seed ? [seed, ...inRange] : inRange
+})
+
+/** 回撤曲线按「日历日」画：非交易日沿用上一日净值，保证「本月」严格从当月 1 号开始 */
+const ddFiltered = computed(() => {
+  const { start, end } = ddScope.value
+  const pts = ddPoints.value
+  if (!pts.length) return []
+  const from = dayjs(pts[0].date).isAfter(start, 'day') ? dayjs(pts[0].date) : start
+  const map = new Map(pts.map((p) => [p.date, p]))
+  const out = []
+  let last = null
+  let d = from
+  while (!d.isAfter(end, 'day')) {
+    const key = d.format('YYYY-MM-DD')
+    const hit = map.get(key)
+    if (hit) last = hit
+    if (last) out.push(hit || { ...last, date: key })
+    d = d.add(1, 'day')
+  }
+  return out
 })
 
 const ddStats = computed(() => drawdown(ddFiltered.value))
 
 // 多次回撤事件：忽略小于该值（绝对值百分比）的波动，避免把四舍五入级别的抖动也列出来
+// 事件只落在真实数据点上，避免把节假日标成峰/谷
 const DD_MIN_PCT = 0.1
 const DD_MARK_MAX = 5 // 曲线上最多标几个序号
-const ddEvents = computed(() => drawdownEvents(ddFiltered.value, { minPct: DD_MIN_PCT }))
+const ddEvents = computed(() => drawdownEvents(ddPoints.value, { minPct: DD_MIN_PCT }))
 const ddMarks = computed(() => ddEvents.value.slice(0, DD_MARK_MAX))
 
 function drawDrawdown() {

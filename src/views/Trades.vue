@@ -12,6 +12,7 @@ const router = useRouter()
 const portfolio = usePortfolioStore()
 const tradeVisible = ref(false)
 const cashVisible = ref(false)
+const editingCash = ref(null)
 const editingTrade = ref(null)
 const filter = ref('all')
 const showCash = ref(true)
@@ -78,7 +79,33 @@ async function delTrade(t) {
   }
 }
 
+// 「新建仓」自动产生的入金由系统维护（金额 = 建仓成本、日期随建仓记录联动），不允许手动改：
+// 结构化标记是 origin='initial'，老数据可能没回填，再按备注前缀兜底
+function isAutoFlow(c) {
+  return (
+    c.type === 'deposit' &&
+    (c.origin === 'initial' || String(c.note || '').startsWith('初始建仓-自动入金（'))
+  )
+}
+
+function openEditCash(c) {
+  if (isAutoFlow(c)) return
+  editingCash.value = c
+  cashVisible.value = true
+}
+
+function openAddCash() {
+  editingCash.value = null
+  cashVisible.value = true
+}
+
 async function delCash(c) {
+  // 「新建仓」自动生成的入金与其买入记录成对联动：要删就删对应的建仓买入，
+  // 单独删会让那笔买入失去配对的资金记录，本金与成本口径错位
+  if (isAutoFlow(c)) {
+    ElMessage.warning('该入金由「新建仓」自动生成，请到交易列表删除对应的建仓买入记录')
+    return
+  }
   try {
     await ElMessageBox.confirm(`确定删除该笔资金记录（${c.type === 'deposit' ? '入金' : '出金'} ¥${fmtNum(c.amount, 2)}）？`, '删除确认', { type: 'warning' })
     await portfolio.deleteCashFlow(c.id)
@@ -97,7 +124,7 @@ async function delCash(c) {
         <div class="page-title">交易</div>
       </div>
       <div class="row gap8">
-        <el-button size="small" @click="cashVisible = true">资金</el-button>
+        <el-button size="small" @click="openAddCash">资金</el-button>
         <el-button size="small" type="primary" @click="openAdd">记一笔</el-button>
       </div>
     </div>
@@ -174,13 +201,15 @@ async function delCash(c) {
               <span class="type-badge" :class="c.type === 'deposit' ? 'tag-deposit' : 'tag-withdraw'">
                 {{ c.type === 'deposit' ? '入金' : '出金' }}
               </span>
+              <span v-if="isAutoFlow(c)" class="auto-badge">补录</span>
               <span class="muted" style="margin-left: 8px">{{ c.date }}<span v-if="c.note"> · {{ c.note }}</span></span>
             </div>
             <div class="row gap8">
               <span class="num" :class="c.type === 'deposit' ? 'up' : 'down'">
                 {{ c.type === 'deposit' ? '+' : '-' }}¥{{ fmtNum(c.amount, 2) }}
               </span>
-              <el-icon class="del" @click="delCash(c)"><Delete /></el-icon>
+              <el-icon v-if="!isAutoFlow(c)" class="del" @click="openEditCash(c)"><Edit /></el-icon>
+              <el-icon v-if="!isAutoFlow(c)" class="del" @click="delCash(c)"><Delete /></el-icon>
             </div>
           </div>
         </div>
@@ -190,7 +219,7 @@ async function delCash(c) {
   </div>
 
   <TradeForm v-model="tradeVisible" :trade="editingTrade" />
-  <CashForm v-model="cashVisible" />
+  <CashForm v-model="cashVisible" :flow="editingCash" />
 </template>
 
 <style scoped>
@@ -298,6 +327,15 @@ async function delCash(c) {
 }
 .cash-item:last-child {
   border-bottom: none;
+}
+/* 「新建仓」自动生成的入金：系统维护，不可编辑 */
+.auto-badge {
+  margin-left: 6px;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: #f1f5f9;
+  color: #94a3b8;
 }
 .back-icon {
   font-size: 20px;

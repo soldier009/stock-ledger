@@ -1,5 +1,5 @@
 <script setup>
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import dayjs from 'dayjs'
 import { usePortfolioStore } from '../stores/portfolio'
@@ -8,10 +8,13 @@ import { DEFAULT_BROKER } from '../constants'
 const visible = defineModel({ type: Boolean, default: false })
 const props = defineProps({
   // 预设券商：从资产页某券商卡片进入时预填
-  presetBroker: { type: String, default: '' }
+  presetBroker: { type: String, default: '' },
+  // 编辑模式：传入要修改的资金记录（由「新建仓」自动生成的入金不允许传入）
+  flow: { type: Object, default: null }
 })
 const portfolio = usePortfolioStore()
 const submitting = ref(false)
+const title = computed(() => (props.flow ? '编辑资金记录' : '资金出入'))
 
 const form = reactive({
   date: dayjs().format('YYYY-MM-DD'),
@@ -23,6 +26,17 @@ const form = reactive({
 
 watch(visible, (v) => {
   if (!v) return
+  if (props.flow) {
+    const c = props.flow
+    Object.assign(form, {
+      date: c.date,
+      type: c.type || 'deposit',
+      amount: Number(c.amount) || null,
+      note: c.note || '',
+      broker: c.broker || props.presetBroker || portfolio.defaultBroker || DEFAULT_BROKER
+    })
+    return
+  }
   Object.assign(form, {
     date: dayjs().format('YYYY-MM-DD'),
     type: 'deposit',
@@ -37,14 +51,20 @@ async function submit() {
   if (!form.amount || Number(form.amount) <= 0) return ElMessage.warning('请输入金额')
   submitting.value = true
   try {
-    await portfolio.addCashFlow({
+    const payload = {
       date: form.date,
       type: form.type,
       amount: Number(form.amount),
       note: form.note.trim(),
       broker: form.broker || portfolio.defaultBroker || DEFAULT_BROKER
-    })
-    ElMessage.success('记录成功')
+    }
+    if (props.flow) {
+      await portfolio.updateCashFlow(props.flow.id, payload)
+      ElMessage.success('已保存')
+    } else {
+      await portfolio.addCashFlow(payload)
+      ElMessage.success('记录成功')
+    }
     visible.value = false
   } finally {
     submitting.value = false
@@ -53,7 +73,7 @@ async function submit() {
 </script>
 
 <template>
-  <el-dialog v-model="visible" title="资金出入" width="90%" :show-close="false">
+  <el-dialog v-model="visible" :title="title" width="90%" :show-close="false">
     <el-form label-position="top" size="large">
       <el-form-item label="所属券商">
         <el-select v-model="form.broker" style="width: 100%">
