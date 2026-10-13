@@ -327,16 +327,16 @@ async function applyBatch(patch) {
         </span>
       </div>
       <template v-if="!brokerCollapsed">
-        <div class="broker-chips">
-          <span
+        <div class="broker-list">
+          <div
             v-for="b in brokerRows"
             :key="b.name"
-            class="broker-chip"
+            class="broker-line"
             @click.stop="router.push('/cash')"
           >
             <span class="chip-name">{{ b.name }}</span>
-            <span class="chip-cash num" :class="{ down: b.balance < 0 }">{{ fmtMoney(b.balance, 0) }}</span>
-          </span>
+            <span class="chip-cash num" :class="{ down: b.balance < 0 }">{{ fmtMoney(b.balance, 2) }}</span>
+          </div>
         </div>
         <div class="broker-more" @click.stop="router.push('/cash')">
           <span>资金流水与出入金</span>
@@ -434,15 +434,21 @@ async function applyBatch(patch) {
 .broker-bar {
   padding: 4px 0 6px;
 }
-.broker-chips {
-  display: flex;
-  gap: 8px;
-  margin: 2px 14px 8px;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
+/* 一个券商一行，避免横向挤压看不全 */
+.broker-list {
+  margin: 2px 0 6px;
 }
-.broker-chip {
+.broker-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 14px;
+  border-top: 1px solid var(--border, #f1f5f9);
   cursor: pointer;
+}
+.broker-line:active {
+  background: var(--bg);
 }
 .broker-more {
   display: flex;
@@ -454,22 +460,17 @@ async function applyBatch(patch) {
   color: var(--primary);
   cursor: pointer;
 }
-.broker-chip {
-  flex: none;
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  padding: 5px 10px;
-  border-radius: 10px;
-  background: var(--bg);
-  font-size: 12px;
-}
 .chip-name {
+  font-size: 13px;
   color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .chip-cash {
+  flex: none;
   font-weight: 700;
-  font-size: 13px;
+  font-size: 14px;
 }
 .group-section {
   margin-bottom: 12px;

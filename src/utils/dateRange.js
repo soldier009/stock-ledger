@@ -2,11 +2,9 @@ import dayjs from 'dayjs'
 
 // 日期区间页签（自定义档用起止日期）：分析页回撤与交易页筛选共用，保证两处口径一致
 export const RANGE_OPTIONS = [
-  { label: '本月', key: 'mtd' },
-  { label: '一月', key: '1m' },
-  { label: '三月', key: '3m' },
-  { label: '今年', key: 'ytd' },
-  { label: '一年', key: '1y' },
+  { label: '近一月', key: '1m' },
+  { label: '近三月', key: '3m' },
+  { label: '近一年', key: '1y' },
   { label: '全部', key: 'all' },
   { label: '自定义', key: 'custom', icon: true }
 ]

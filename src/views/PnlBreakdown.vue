@@ -462,17 +462,24 @@ function goStock(r) {
 .pnl-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 4px 10px;
-  margin-top: 6px;
+  gap: 10px 8px;
+  margin-top: 8px;
   padding-left: 22px;
   font-size: 11px;
   color: var(--text-2, #64748b);
 }
-.pnl-grid span {
-  margin-right: 4px;
+.pnl-grid > div {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
 }
 .pnl-grid b {
+  display: block;
+  margin-top: 2px;
   font-weight: 600;
+  font-size: 12px;
+  line-height: 1.3;
   color: #334155;
 }
 </style>
