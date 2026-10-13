@@ -4,6 +4,7 @@ import { ElMessage } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { usePortfolioStore } from '../stores/portfolio'
 import { fmtMoney, fmtNum, fmtPct, pnlClass, fmtTime, parseTags } from '../utils/format'
+import { matchPosition, normKeyword } from '../utils/search'
 import PullRefresh from '../components/PullRefresh.vue'
 import PositionCard from '../components/PositionCard.vue'
 import TradeForm from '../components/TradeForm.vue'
@@ -57,11 +58,18 @@ const initialInflow = computed(() =>
     .reduce((a, c) => a + Number(c.amount || 0), 0)
 )
 
+// 持仓查找：名称 / 代码 / 标签 / 用途 / 券商
+const keyword = ref('')
+const searching = computed(() => !!normKeyword(keyword.value))
+const matched = computed(() =>
+  portfolio.positions.filter((p) => matchPosition(keyword.value, p, parseTags))
+)
+
 // 持仓明细按标签分组（同一标签放一起），无标签归入「未分类」
 const groups = computed(() => {
   const map = new Map()
   const uncat = []
-  for (const p of portfolio.positions) {
+  for (const p of matched.value) {
     // 资产类别标签是单选：只取第一个，避免同一持仓被计入多个分组、各分组市值之和大于总市值
     const t = parseTags(p.tag)[0] || ''
     if (!t) {
@@ -91,6 +99,8 @@ function toggleGroup(tag) {
   saveCollapsed()
 }
 function isCollapsed(tag) {
+  // 正在查找时一律展开，否则命中的持仓藏在折叠组里等于没搜到
+  if (searching.value) return false
   const key = tag || ''
   // 默认折叠；点过的标签保持其最后状态，刷新/重开页面后依然有效
   return key in collapsed.value ? collapsed.value[key] : true
@@ -180,7 +190,16 @@ async function onRefresh() {
     </div>
 
     <!-- 持仓明细（按标签分组） -->
-    <div v-if="portfolio.positions.length">
+    <div v-if="portfolio.positions.length" class="holdings-search">
+      <el-input v-model="keyword" size="small" placeholder="搜持仓：名称 / 代码 / 标签 / 用途" clearable>
+        <template #prefix><el-icon><Search /></el-icon></template>
+      </el-input>
+      <div v-if="searching" class="row between" style="margin-top: 6px">
+        <span class="muted num">命中 {{ matched.length }} / {{ portfolio.positions.length }} 只</span>
+        <span class="clear-link" @click="keyword = ''">清空</span>
+      </div>
+    </div>
+    <div v-if="groups.length">
       <div class="group-section" v-for="g in groups" :key="g.tag || '__uncat__'">
         <div class="group-header" @click="toggleGroup(g.tag)">
           <el-icon :class="{ flip: isCollapsed(g.tag) }"><ArrowDown /></el-icon>
@@ -195,6 +214,11 @@ async function onRefresh() {
           <PositionCard v-for="p in g.items" :key="p.market + ':' + p.code" :p="p" />
         </template>
       </div>
+    </div>
+    <div v-else-if="searching" class="empty-tip">
+      <div class="icon"><el-icon :size="40"><Search /></el-icon></div>
+      <div>没有匹配「{{ keyword.trim() }}」的持仓</div>
+      <div class="clear-link" style="margin-top: 8px" @click="keyword = ''">清空</div>
     </div>
     <div v-else class="empty-tip">
       <div class="icon"><el-icon :size="40"><Box /></el-icon></div>
@@ -214,6 +238,14 @@ async function onRefresh() {
 </template>
 
 <style scoped>
+.holdings-search {
+  padding: 0 16px 8px;
+}
+.clear-link {
+  font-size: 12px;
+  color: var(--primary);
+  cursor: pointer;
+}
 .spin {
   animation: spin 1s linear infinite;
   margin-left: 4px;

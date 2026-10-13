@@ -7,6 +7,7 @@ import { usePortfolioStore } from '../stores/portfolio'
 import { Calendar, ArrowRight } from '@element-plus/icons-vue'
 import { drawdown, drawdownEvents, cumulativeRealized, NO_TAG } from '../services/calc'
 import { fmtMoney, fmtNum, fmtPct, fmtShares, pnlClass } from '../utils/format'
+import { RANGE_OPTIONS, rangeBounds } from '../utils/dateRange'
 import { buildPnlRows, sumRows, hasForeignRealized } from '../utils/pnl'
 import DonutChart from '../components/DonutChart.vue'
 
@@ -317,38 +318,13 @@ function drawAssetCurve() {
 }
 
 // 回撤分析：范围页签（自定义档用起止日期）
-const ddRanges = [
-  { label: '本月', key: 'mtd' },
-  { label: '一月', key: '1m' },
-  { label: '三月', key: '3m' },
-  { label: '今年', key: 'ytd' },
-  { label: '一年', key: '1y' },
-  { label: '全部', key: 'all' },
-  { label: '自定义', key: 'custom', icon: true }
-]
+// 与交易页筛选共用 src/utils/dateRange.js 的口径
+const ddRanges = RANGE_OPTIONS
 const ddRange = ref('1m')
 const ddCustomStart = ref('')
 const ddCustomEnd = ref('')
 
-function ddStartOfRange(key) {
-  const today = dayjs()
-  switch (key) {
-    case 'mtd': return today.startOf('month')
-    case '1m': return today.subtract(1, 'month')
-    case '3m': return today.subtract(3, 'month')
-    case 'ytd': return today.startOf('year')
-    case '1y': return today.subtract(1, 'year')
-    case 'all': return dayjs('1900-01-01')
-    case 'custom': return ddCustomStart.value ? dayjs(ddCustomStart.value) : today.subtract(1, 'month')
-    default: return today.subtract(1, 'month')
-  }
-}
-
-const ddScope = computed(() => {
-  const start = ddStartOfRange(ddRange.value)
-  const end = ddRange.value === 'custom' && ddCustomEnd.value ? dayjs(ddCustomEnd.value) : dayjs()
-  return { start, end }
-})
+const ddScope = computed(() => rangeBounds(ddRange.value, ddCustomStart.value, ddCustomEnd.value))
 
 /**
  * 区间内的真实数据点。
