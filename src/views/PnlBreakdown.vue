@@ -1,9 +1,11 @@
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, ArrowRight } from '@element-plus/icons-vue'
+import * as echarts from 'echarts'
+import dayjs from 'dayjs'
 import { usePortfolioStore } from '../stores/portfolio'
-import { fmtMoney, fmtPct, marketLabel, pnlClass } from '../utils/format'
+import { fmtMoney, fmtNum, fmtPct, marketLabel, pnlClass } from '../utils/format'
 import {
   DIM_TAG,
   DIM_PURPOSE,
@@ -69,6 +71,10 @@ function signedPct(v, digits = 2) {
   const n = Number(v) || 0
   return (n > 0 ? '+' : '') + fmtPct(n, digits)
 }
+// 今日盈亏：无行情 / 已清仓时显示「—」，与总览口径一致
+function todayText(sum) {
+  return sum && sum.hasToday ? signed(sum.today, 0) : '—'
+}
 function pctOfCost(v) {
   const t = costTotal.value
   if (!(t > 0)) return '0.0'
@@ -98,10 +104,125 @@ function onRowClick(group) {
   }
 }
 
+// 标的走势页：显示该股票的收益信息与走势曲线（清仓标的同样可看历史曲线）
 function goStock(r) {
-  if (r.closed) return
-  router.push(`/stock/${r.market}/${r.code}`)
+  router.push(`/stock/${r.market}/${r.code}/trend`)
 }
+
+// ===== 二级页顶部的「该分类合计走势」=====
+// 数据直接取资产序列按标签 / 用途拆出的当日市值合计，与分组口径一致
+const GROUP_RANGES = [
+  { key: '3m', label: '近三月' },
+  { key: '1y', label: '近一年' },
+  { key: 'all', label: '全部' }
+]
+const groupRange = ref('1y')
+const groupRef = ref(null)
+let groupChart = null
+
+const groupPoints = computed(() => {
+  if (level.value.stage !== 2) return []
+  const key = level.value.key
+  const dim = level.value.dim
+  const from =
+    groupRange.value === '3m'
+      ? dayjs().subtract(3, 'month')
+      : groupRange.value === '1y'
+        ? dayjs().subtract(1, 'year')
+        : null
+  return (portfolio.assetSeries || [])
+    .filter((p) => !from || !dayjs(p.date).isBefore(from, 'day'))
+    .map((p) => ({
+      date: p.date,
+      value: Math.round(((dim === DIM_PURPOSE ? p.byPurpose : p.byTag) || {})[key] || 0)
+    }))
+    .filter((p) => Math.abs(p.value) > 0.005)
+})
+
+function drawGroupCurve() {
+  if (level.value.stage !== 2) return
+  if (!groupRef.value) return
+  if (!groupChart) groupChart = echarts.init(groupRef.value)
+  const pts = groupPoints.value
+  if (!pts.length) {
+    groupChart.clear()
+    return
+  }
+  groupChart.setOption(
+    {
+      grid: { left: 58, right: 16, top: 16, bottom: 26 },
+      tooltip: {
+        trigger: 'axis',
+        formatter: (params) => {
+          const arr = Array.isArray(params) ? params : [params]
+          if (!arr.length) return ''
+          return `${arr[0].axisValueLabel}<br/>市值　¥${fmtNum(arr[0].value, 0)}`
+        }
+      },
+      xAxis: {
+        type: 'category',
+        boundaryGap: false,
+        data: pts.map((p) => p.date.slice(5)),
+        axisLabel: { color: '#94a3b8', fontSize: 10 },
+        axisLine: { lineStyle: { color: '#e2e8f0' } }
+      },
+      yAxis: {
+        type: 'value',
+        axisLabel: {
+          color: '#94a3b8',
+          fontSize: 10,
+          formatter: (v) => (Math.abs(v) >= 10000 ? (v / 10000).toFixed(1) + '万' : String(Math.round(v)))
+        },
+        splitLine: { lineStyle: { color: '#f1f5f9' } }
+      },
+      series: [
+        {
+          name: '市值',
+          type: 'line',
+          data: pts.map((p) => p.value),
+          smooth: true,
+          symbol: 'none',
+          lineStyle: { color: '#dc2626', width: 2 },
+          itemStyle: { color: '#dc2626' },
+          areaStyle: {
+            color: {
+              type: 'linear',
+              x: 0,
+              y: 0,
+              x2: 0,
+              y2: 1,
+              colorStops: [
+                { offset: 0, color: 'rgba(220,38,38,0.20)' },
+                { offset: 1, color: 'rgba(220,38,38,0.02)' }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    true
+  )
+}
+
+watch(
+  [() => level.value.stage, () => level.value.key, groupRange, () => portfolio.assetSeries],
+  () => {
+    nextTick(() => {
+      if (level.value.stage === 2) {
+        drawGroupCurve()
+        if (groupChart) groupChart.resize()
+      }
+    })
+  },
+  { immediate: true, deep: false }
+)
+
+onBeforeUnmount(() => {
+  if (groupChart) {
+    groupChart.dispose()
+    groupChart = null
+  }
+})
 </script>
 
 <template>
@@ -158,6 +279,12 @@ function goStock(r) {
           <div class="pnl-sum-value" :class="pnlClass(scopeSum.floating)">{{ signed(scopeSum.floating, 0) }}</div>
         </div>
         <div class="pnl-sum-item">
+          <div class="pnl-sum-label">今日盈亏</div>
+          <div class="pnl-sum-value" :class="scopeSum.hasToday ? pnlClass(scopeSum.today) : ''">
+            {{ todayText(scopeSum) }}
+          </div>
+        </div>
+        <div class="pnl-sum-item">
           <div class="pnl-sum-label">已实现盈亏</div>
           <div class="pnl-sum-value" :class="pnlClass(scopeSum.realized)">{{ signed(scopeSum.realized, 0) }}</div>
         </div>
@@ -197,6 +324,7 @@ function goStock(r) {
           <div class="pnl-row-meta">
             <span>成本 {{ fmtMoney(g.cost, 0) }}</span>
             <span>浮动 <b :class="pnlClass(g.floating)">{{ signed(g.floating, 0) }}</b></span>
+            <span>今日 <b :class="g.hasToday ? pnlClass(g.today) : ''">{{ todayText(g) }}</b></span>
             <span>已实现 <b :class="pnlClass(g.realized)">{{ signed(g.realized, 0) }}</b></span>
             <span>收益率 <b :class="pnlClass(g.returnPct)">{{ signedPct(g.returnPct) }}</b></span>
           </div>
@@ -236,6 +364,12 @@ function goStock(r) {
           <div class="pnl-sum-value" :class="pnlClass(scopeSum.floating)">{{ signed(scopeSum.floating, 0) }}</div>
         </div>
         <div class="pnl-sum-item">
+          <div class="pnl-sum-label">今日盈亏</div>
+          <div class="pnl-sum-value" :class="scopeSum.hasToday ? pnlClass(scopeSum.today) : ''">
+            {{ todayText(scopeSum) }}
+          </div>
+        </div>
+        <div class="pnl-sum-item">
           <div class="pnl-sum-label">已实现盈亏</div>
           <div class="pnl-sum-value" :class="pnlClass(scopeSum.realized)">{{ signed(scopeSum.realized, 0) }}</div>
         </div>
@@ -251,12 +385,32 @@ function goStock(r) {
 
       <div v-if="foreign" class="muted pnl-note">港美股已实现盈亏按交易原币计，未折人民币</div>
 
+      <!-- 该分类下股票合计的市值走势 -->
+      <div class="trend-block">
+        <div class="row between">
+          <span class="section-title" style="margin: 0">合计市值走势</span>
+          <div class="trend-tabs">
+            <span
+              v-for="r in GROUP_RANGES"
+              :key="r.key"
+              :class="{ active: groupRange === r.key }"
+              @click="groupRange = r.key"
+            >
+              {{ r.label }}
+            </span>
+          </div>
+        </div>
+        <div v-show="groupPoints.length" ref="groupRef" class="trend-chart"></div>
+        <div v-if="!groupPoints.length" class="muted" style="text-align: center; padding: 16px 0">
+          暂无走势数据
+        </div>
+      </div>
+
       <div v-if="scoped.length" class="comp-list">
         <div
           v-for="(r, i) in scoped"
           :key="r.key"
-          class="pnl-detail"
-          :class="{ clickable: !r.closed }"
+          class="pnl-detail clickable"
           @click="goStock(r)"
         >
           <div class="pnl-detail-top">
@@ -273,6 +427,7 @@ function goStock(r) {
             <div><span>成本</span><b>{{ fmtMoney(r.cost, 0) }}</b></div>
             <div><span>市值</span><b>{{ r.closed ? '—' : fmtMoney(r.mv, 0) }}</b></div>
             <div><span>浮动盈亏</span><b :class="pnlClass(r.floating)">{{ r.closed ? '—' : signed(r.floating, 0) }}</b></div>
+            <div><span>今日盈亏</span><b :class="r.hasToday ? pnlClass(r.today) : ''">{{ todayText(r) }}</b></div>
             <div><span>已实现盈亏</span><b :class="pnlClass(r.realized)">{{ signed(r.realized, 0) }}</b></div>
             <div><span>收益率</span><b :class="pnlClass(r.returnPct)">{{ r.closed ? '—' : signedPct(r.returnPct) }}</b></div>
             <div><span>{{ level.stage === 2 ? '占该分类' : '占总投资' }}</span><b>{{ pctOfCost(r.cost) }}%</b></div>
@@ -459,12 +614,31 @@ function goStock(r) {
   padding: 10px 0;
   border-bottom: 1px solid #f8fafc;
 }
+/* 二级页顶部的分类合计走势 */
+.trend-block {
+  margin: 10px 0 4px;
+}
+.trend-chart {
+  width: 100%;
+  height: 190px;
+  margin-top: 6px;
+}
+.trend-tabs {
+  display: flex;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-2, #64748b);
+}
+.trend-tabs .active {
+  color: var(--primary);
+  font-weight: 600;
+}
+/* 自适应列数：宽屏排 4 列，窄屏自动降到 3 列，单格不小于 72px 保证金额放得下 */
 .pnl-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px 8px;
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+  gap: 10px 6px;
   margin-top: 8px;
-  padding-left: 22px;
   font-size: 11px;
   color: var(--text-2, #64748b);
 }

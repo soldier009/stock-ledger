@@ -399,8 +399,22 @@ export async function getKv(key) {
   return idbGet(key)
 }
 
+/**
+ * IndexedDB 用结构化克隆存值，而 Vue 的响应式对象是 Proxy —— 直接 put 会抛
+ * DataCloneError（实测：ref 数组 / reactive 对象都克隆失败），写入被静默丢弃。
+ * 这里统一先转成纯对象/数组，避免「存了但下次打开还在」这类问题。
+ */
+function toPlain(v) {
+  if (v === null || typeof v !== 'object') return v
+  try {
+    return JSON.parse(JSON.stringify(v))
+  } catch {
+    return v
+  }
+}
+
 export async function setKv(key, value) {
-  await idbSet(key, value)
+  await idbSet(key, toPlain(value))
 }
 
 // ===== 同步留底：覆盖前自动保存一份，避免误覆盖丢数据 =====

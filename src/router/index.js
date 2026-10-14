@@ -11,6 +11,7 @@ const routes = [
   { path: '/composition', name: 'composition', component: () => import('../views/Composition.vue') },
   { path: '/pnl', name: 'pnl-breakdown', component: () => import('../views/PnlBreakdown.vue') },
   { path: '/stock/:market/:code', name: 'stock-detail', component: () => import('../views/StockDetail.vue') },
+  { path: '/stock/:market/:code/trend', name: 'stock-trend', component: () => import('../views/StockTrend.vue') },
   { path: '/privacy', name: 'privacy', component: () => import('../views/Privacy.vue') }
 ]
 

@@ -9,6 +9,8 @@ import { drawdown, drawdownEvents, cumulativeRealized, NO_TAG } from '../service
 import { fmtMoney, fmtNum, fmtPct, fmtShares, pnlClass } from '../utils/format'
 import { RANGE_OPTIONS, rangeBounds } from '../utils/dateRange'
 import { buildPnlRows, sumRows, hasForeignRealized } from '../utils/pnl'
+import { INDEX_LIST } from '../services/indexes'
+import { getKv, setKv } from '../db'
 import DonutChart from '../components/DonutChart.vue'
 
 const portfolio = usePortfolioStore()
@@ -249,12 +251,221 @@ const assetChart = computed(() => {
 
 const assetHasData = computed(() => assetChart.value.series.some((s) => s.data.some((v) => Math.abs(v) > 0.005)))
 
+// 纵轴不从 0 起：贴着曲线画才能看清波动。
+// 下限 = 曲线最小值再往下留一点（振幅的 8%，曲线很平时按量级的 1%），
+// 既不至于像 0.9 那样留出大片空白，也不会让最低点贴在轴上难看。
+function axisMin(vals, dec = 0) {
+  if (!vals.length) return null
+  let mn = Infinity
+  let mx = -Infinity
+  for (const v of vals) {
+    const n = Number(v)
+    if (!Number.isFinite(n)) continue
+    if (n < mn) mn = n
+    if (n > mx) mx = n
+  }
+  if (mn === Infinity) return null
+  const range = mx - mn
+  const pad = range > 0 ? range * 0.08 : Math.max(Math.abs(mn) * 0.01, 1)
+  const raw = mn - pad
+  const p = Math.pow(10, dec)
+  return Math.floor(raw * p) / p
+}
+
+// 各组是独立曲线（不堆叠），下限取所有曲线里的最小值
+const assetYMin = computed(() => {
+  const { series } = assetChart.value
+  if (!series.length) return 0
+  const vals = []
+  for (const s of series) for (const v of s.data || []) if (Number(v) > 0.005) vals.push(Number(v))
+  const m = axisMin(vals)
+  return m === null ? 0 : m
+})
+
+// ===== 资产曲线的收益对比（大盘指数）=====
+// 组合是金额、指数是点位，量纲不同：统一把区间起点归一化为 100，比较的是收益率
+const CMP_KEY = 'stock-ledger-cmp-v1'
+const compareOn = ref([])
+getKv(CMP_KEY)
+  .then((v) => {
+    if (v && Array.isArray(v.keys)) compareOn.value = v.keys.filter((k) => INDEX_LIST.some((i) => i.key === k))
+  })
+  .catch(() => {})
+function toggleCompare(key) {
+  const i = compareOn.value.indexOf(key)
+  if (i >= 0) compareOn.value.splice(i, 1)
+  else compareOn.value.push(key)
+  setKv(CMP_KEY, { keys: compareOn.value.slice() }).catch((e) => console.warn('[分析] 对比选择保存失败', e))
+}
+
+// 组合逐日市值（多组独立曲线时取当日合计）
+const portfolioValues = computed(() => {
+  const { series } = assetChart.value
+  if (!series.length) return []
+  const n = (series[0].data || []).length
+  const out = []
+  for (let i = 0; i < n; i++) {
+    let sum = 0
+    for (const s of series) sum += Number(s.data[i]) || 0
+    out.push(sum)
+  }
+  return out
+})
+
+// 归一化序列：组合 + 选中的指数，均以区间第一个有效值为 100
+const compareSeries = computed(() => {
+  const { dates } = assetChart.value
+  if (!dates.length || !compareOn.value.length) return []
+  const out = []
+  const vals = portfolioValues.value
+  const pIdx = vals.findIndex((v) => v > 0.005)
+  if (pIdx >= 0) {
+    const base = vals[pIdx]
+    out.push({
+      name: '我的持仓',
+      color: '#dc2626',
+      width: 2.5,
+      data: vals.map((v) => (base ? Math.round((v / base) * 10000) / 100 : null))
+    })
+  }
+  const cache = (portfolio.indexCache && portfolio.indexCache.byKey) || {}
+  for (const key of compareOn.value) {
+    const meta = INDEX_LIST.find((i) => i.key === key)
+    const days = (cache[key] && cache[key].days) || []
+    if (!meta || !days.length) continue
+    // 三地交易日历不同：缺失日沿用上一交易日收盘
+    let ptr = -1
+    const filled = dates.map((d) => {
+      while (ptr + 1 < days.length && days[ptr + 1][0] <= d) ptr++
+      return ptr >= 0 ? days[ptr][1] : null
+    })
+    const first = filled.findIndex((v) => v !== null && v > 0)
+    if (first < 0) continue
+    const base = filled[first]
+    out.push({
+      name: meta.name,
+      color: meta.color,
+      width: 1.6,
+      data: filled.map((v) => (v == null ? null : Math.round((v / base) * 10000) / 100))
+    })
+  }
+  return out
+})
+
+const compareMode = computed(() => compareOn.value.length > 0 && compareSeries.value.length > 1)
+
+// 对比曲线下限：取所有归一化序列里的最小值，与资产曲线口径一致
+const compareYMin = computed(() => {
+  const vals = []
+  for (const s of compareSeries.value) {
+    for (const v of s.data || []) {
+      if (v !== null && v !== undefined && !Number.isNaN(v)) vals.push(Number(v))
+    }
+  }
+  return axisMin(vals, 2)
+})
+
+// 该指数是否已取到日K（未取到时在开关上标注「无数据」）
+function hasIndex(key) {
+  const cache = (portfolio.indexCache && portfolio.indexCache.byKey) || {}
+  return !!((cache[key] && cache[key].days) || []).length
+}
+
+function drawCompareCurve() {
+  const chart = initChart(assetRef, 'asset')
+  if (!chart) return
+  const { dates } = assetChart.value
+  const series = compareSeries.value
+  if (!dates.length || !series.length) {
+    chart.clear()
+    return
+  }
+  const pct = (v) => (v === null || v === undefined ? '' : (v - 100 >= 0 ? '+' : '') + (v - 100).toFixed(1) + '%')
+  chart.setOption(
+    {
+      ...commonOption(),
+      grid: { left: 52, right: 16, top: 24, bottom: 46 },
+      legend: {
+        data: series.map((s) => s.name),
+        bottom: 4,
+        itemWidth: 10,
+        itemHeight: 10,
+        itemGap: 10,
+        textStyle: { fontSize: 10, color: '#64748b' }
+      },
+      tooltip: {
+        trigger: 'axis',
+        formatter: (params) => {
+          const arr = Array.isArray(params) ? params : [params]
+          if (!arr.length) return ''
+          return [arr[0].axisValueLabel, ...arr.map((p) => `${p.marker}${p.seriesName}　${pct(p.value)}`)].join(
+            '<br/>'
+          )
+        }
+      },
+      xAxis: {
+        type: 'category',
+        boundaryGap: false,
+        data: dates.map((d) => d.slice(5)),
+        axisLabel: { color: '#94a3b8', fontSize: 10 },
+        axisLine: { lineStyle: { color: '#e2e8f0' } }
+      },
+      yAxis: {
+        type: 'value',
+        min: compareYMin.value === null ? undefined : compareYMin.value,
+        axisLabel: { color: '#94a3b8', fontSize: 10, formatter: (v) => (v - 100 >= 0 ? '+' : '') + (v - 100).toFixed(0) + '%' },
+        splitLine: { lineStyle: { color: '#f1f5f9' } }
+      },
+      series: series.map((s) => ({
+        name: s.name,
+        type: 'line',
+        data: s.data,
+        connectNulls: true,
+        smooth: true,
+        symbol: 'none',
+        lineStyle: { color: s.color, width: s.width },
+        itemStyle: { color: s.color }
+      }))
+    },
+    true
+  )
+}
+
 function drawAssetCurve() {
+  if (compareMode.value) {
+    drawCompareCurve()
+    return
+  }
   const chart = initChart(assetRef, 'asset')
   if (!chart) return
   const { dates, series } = assetChart.value
   if (!dates.length || !assetHasData.value) { chart.clear(); return }
   const multi = series.length > 1
+  // 单条（全部 / 选中某一组）：保留渐变面积填充到轴下限，即「瀑布」效果。
+  // 多条（按标签 / 按股票 + 全部）：各画独立曲线，不堆叠、不做面积，
+  // 这样每条都在自己的量级上，纵轴贴底也不会把下面几层裁掉。
+  const mkSeries = (s) => ({
+    name: s.name,
+    type: 'line',
+    data: s.data,
+    smooth: true,
+    symbol: 'none',
+    lineStyle: { color: s.color, width: multi ? 1.6 : 2.5 },
+    itemStyle: { color: s.color },
+    ...(multi
+      ? {}
+      : {
+          areaStyle: {
+            color: {
+              type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+              colorStops: [
+                { offset: 0, color: alpha(s.color, 0.22) },
+                { offset: 1, color: alpha(s.color, 0.02) }
+              ]
+            }
+          }
+        })
+  })
   chart.setOption({
     ...commonOption(),
     grid: { left: 64, right: 20, top: multi ? 24 : 20, bottom: multi ? 48 : 34 },
@@ -275,19 +486,25 @@ function drawAssetCurve() {
       formatter: (params) => {
         const arr = Array.isArray(params) ? params : [params]
         if (!arr.length) return ''
-        let total = 0
-        const lines = arr.map((p) => {
-          const v = Number(p.value) || 0
-          total += v
-          return `${p.marker}${p.seriesName}　¥${fmtNum(v, 0)}`
-        })
-        if (arr.length > 1) lines.push(`合计　¥${fmtNum(total, 0)}`)
-        return [arr[0].axisValueLabel || '', ...lines].join('<br/>')
+        if (multi) {
+          const i = arr[0].dataIndex
+          let total = 0
+          const lines = series.map((s) => {
+            const v = Number(s.data[i]) || 0
+            total += v
+            const dot = `<span style="display:inline-block;margin-right:4px;width:8px;height:8px;border-radius:8px;background:${s.color}"></span>`
+            return `${dot}${s.name}　¥${fmtNum(v, 0)}`
+          })
+          lines.push(`合计　¥${fmtNum(total, 0)}`)
+          return [arr[0].axisValueLabel || '', ...lines].join('<br/>')
+        }
+        return `${arr[0].axisValueLabel || ''}<br/>${arr[0].marker}${arr[0].seriesName}　¥${fmtNum(Number(arr[0].value) || 0, 0)}`
       }
     },
     xAxis: { type: 'category', boundaryGap: false, data: dates.map((d) => d.slice(5)), axisLabel: { color: '#94a3b8', fontSize: 10 }, axisLine: { lineStyle: { color: '#e2e8f0' } } },
     yAxis: {
       type: 'value',
+      min: assetYMin.value,
       axisLabel: {
         color: '#94a3b8',
         fontSize: 10,
@@ -295,25 +512,7 @@ function drawAssetCurve() {
       },
       splitLine: { lineStyle: { color: '#f1f5f9' } }
     },
-    series: series.map((s) => ({
-      name: s.name,
-      type: 'line',
-      stack: multi ? 'asset' : undefined,
-      data: s.data,
-      smooth: true,
-      symbol: 'none',
-      lineStyle: { color: s.color, width: multi ? 1.2 : 2.5 },
-      itemStyle: { color: s.color },
-      areaStyle: {
-        color: {
-          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-          colorStops: [
-            { offset: 0, color: alpha(s.color, multi ? 0.55 : 0.22) },
-            { offset: 1, color: alpha(s.color, multi ? 0.28 : 0.02) }
-          ]
-        }
-      }
-    }))
+    series: series.map(mkSeries)
   }, true)
 }
 
@@ -459,6 +658,8 @@ watch([curveKind, curveMarket, curveRange], async () => { await nextTick(); draw
 // 资产曲线：换大类时小类回到「全部」，随后重绘
 watch(assetDim, async () => { assetSub.value = 'all'; await nextTick(); drawAssetCurve() })
 watch([assetSub, assetRange], async () => { await nextTick(); drawAssetCurve() })
+// 指数开关切换 / 指数数据到位后重绘（归一化模式与金额模式互斥）
+watch([compareOn, () => portfolio.indexCache], async () => { await nextTick(); drawAssetCurve() }, { deep: true })
 
 // 日历卡片切到柱形图档（或档内切月/年）时容器会重建，需重建图表实例
 watch([calView, chartMode], async () => {
@@ -708,9 +909,25 @@ const pnlSlices = computed(() => {
           @click="assetRange = r.key"
         >{{ r.label }}</span>
       </div>
+      <!-- 大盘指数对比：选中后曲线切换为「起点 = 100」的收益率对比 -->
+      <div class="cmp-row">
+        <span class="muted cmp-label">对比</span>
+        <span
+          v-for="idx in INDEX_LIST"
+          :key="idx.key"
+          class="dd-chip cmp-chip"
+          :class="{ active: compareOn.includes(idx.key), disabled: !hasIndex(idx.key) }"
+          :style="compareOn.includes(idx.key) ? { borderColor: idx.color, color: idx.color } : null"
+          @click="toggleCompare(idx.key)"
+        >
+          {{ idx.name }}{{ hasIndex(idx.key) ? '' : '（无数据）' }}
+        </span>
+      </div>
       <div ref="assetRef" class="chart"></div>
       <div v-if="!assetHasData" class="muted" style="text-align: center; padding: 4px 0 8px">暂无数据</div>
-      <div class="muted" style="font-size: 11px; margin-top: 2px">口径：持仓市值（不含现金），按当日收盘价估值</div>
+      <div class="muted" style="font-size: 11px; margin-top: 2px">
+        {{ compareMode ? '口径：全部归一化到区间起点（收益对比，买入/入金会造成台阶）' : '口径：持仓市值（不含现金），按当日收盘价估值' }}
+      </div>
     </div>
 
     <!-- 成本与盈亏：环形图为中心收益率，右侧四项指标，整卡点进 /pnl -->
@@ -1333,6 +1550,28 @@ const pnlSlices = computed(() => {
 .dd-chip .el-icon {
   margin-right: 2px;
   vertical-align: -1px;
+}
+/* 指数对比开关：指数多了自动换行，避免横向滚动看不全 */
+.cmp-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.cmp-label {
+  flex: none;
+  font-size: 11px;
+}
+.cmp-chip {
+  border: 1px solid transparent;
+}
+.cmp-chip.active {
+  background: #fff;
+  border-color: #dc2626;
+}
+.cmp-chip.disabled {
+  opacity: 0.55;
 }
 /* 自定义区间：起止日期 */
 .dd-custom {

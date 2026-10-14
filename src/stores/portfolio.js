@@ -24,18 +24,22 @@ import {
   buildClosedRounds,
   netValueSeries,
   assetValueSeries,
+  holdingSeries,
   dailyRealized,
   dailyHoldingPnl,
   drawdown
 } from '../services/calc'
 import { fetchQuotes, fetchRates } from '../services/quotes'
 import { fetchDayKlines } from '../services/kline'
+import { INDEX_LIST, fetchIndexKlines } from '../services/indexes'
 import { rateOf, assetClass, parseTags } from '../utils/format'
 import { DEFAULT_BROKER } from '../constants'
 import { useSettingsStore } from './settings'
 
 // 行情日K缓存（IndexedDB，独立于 sqlite 备份；不触发本地脏标记）
 const KLINE_KEY = 'stock-ledger-kline-v1'
+// 大盘指数日K缓存（供资产曲线收益对比）
+const INDEX_KEY = 'stock-ledger-index-v1'
 
 function fmtDay(d) {
   const m = d.getMonth() + 1
@@ -73,6 +77,9 @@ export const usePortfolioStore = defineStore('portfolio', {
     drawdownStats: null,
     dailyHolding: [],
     klineCache: { bySymbol: {}, updatedAt: '' },
+    // 大盘指数日K：{ byKey: { hs300: { days: [[date, close]], ok } } }
+    indexCache: { byKey: {}, updatedAt: '' },
+    indexSyncing: false,
     klineSyncing: false,
     klineError: '',
     // 日K数据完整性状态：'idle' | 'syncing' | 'ready' | 'missing'
@@ -114,8 +121,10 @@ export const usePortfolioStore = defineStore('portfolio', {
       this.rates = { ...this.rates, usd: settings.rates.usd, hkd: settings.rates.hkd }
       await this.loadData()
       await this.loadKlineCache()
+      await this.loadIndexCache()
       this.ready = true
       this.refreshQuotes()
+      this.syncIndexes()
     },
 
     async loadData() {
@@ -208,6 +217,8 @@ export const usePortfolioStore = defineStore('portfolio', {
         const pnlCny = pnl * rate
         const day = q && q.prevClose ? (price - q.prevClose) * p.shares : null
         const dayCny = day === null ? null : day * rate
+        // 今日盈亏的涨跌幅分母：昨收市值（与 dayCny 同源，缺昨收时为 null）
+        const dayBaseCny = q && q.prevClose ? q.prevClose * p.shares * rate : null
         const st = stockMap.get(p.market + ':' + p.code)
         mvTotal += mvCny
         floating += pnlCny
@@ -230,6 +241,7 @@ export const usePortfolioStore = defineStore('portfolio', {
           pnlCny,
           day,
           dayCny,
+          dayBaseCny,
           pnlPct: p.avgCost > 0 ? (pnl / (p.avgCost * p.shares)) * 100 : null
         }
       })
@@ -354,7 +366,9 @@ export const usePortfolioStore = defineStore('portfolio', {
         r,
         today,
         this.klineCache.bySymbol,
-        this._tagResolver()
+        this._tagResolver(),
+        // 同时按「用途」拆一份，供成本与盈亏页的分组曲线使用（与标签口径并列）
+        { purposeOf: this._purposeResolver() }
       )
       this.drawdownStats = drawdown(this.netValue)
       let rows = dailyHoldingPnl(this.trades, this.klineCache.bySymbol, this.rates)
@@ -388,6 +402,75 @@ export const usePortfolioStore = defineStore('portfolio', {
 
     recomputeDailyHolding() {
       this.refreshSeries()
+    },
+
+    // ===== 大盘指数（资产曲线收益对比）=====
+
+    async loadIndexCache() {
+      try {
+        const v = await getKv(INDEX_KEY)
+        if (v && v.byKey) this.indexCache = { byKey: v.byKey, updatedAt: v.updatedAt || '' }
+      } catch {
+        /* 缓存读取失败时用空缓存 */
+      }
+    },
+
+    // 指数曲线从最早一笔交易开始取，保证与资产曲线同起点
+    _indexFrom() {
+      let first = ''
+      for (const t of this.trades) if (!first || t.date < first) first = t.date
+      for (const c of this.cashFlows) if (!first || c.date < first) first = c.date
+      if (!first) first = fmtDay(new Date(Date.now() - 365 * 86400000))
+      return first
+    },
+
+    async syncIndexes() {
+      if (this.indexSyncing) return
+      this.indexSyncing = true
+      try {
+        const to = fmtDay(new Date())
+        const from = this._indexFrom()
+        const by = { ...(this.indexCache.byKey || {}) }
+        const items = []
+        for (const idx of INDEX_LIST) {
+          const meta = by[idx.key]
+          const last = meta && meta.days && meta.days.length ? meta.days[meta.days.length - 1][0] : ''
+          const start = last ? dayAfter(last) : from
+          if (start > to) continue
+          items.push({ key: idx.key, from: start, to })
+        }
+        if (!items.length) return
+        const res = await fetchIndexKlines(items)
+        let changed = false
+        for (const [key, v] of Object.entries(res || {})) {
+          const prev = (by[key] && by[key].days) || []
+          const map = new Map(prev.map((d) => [d[0], d[1]]))
+          for (const [d, c] of v.days || []) map.set(d, c)
+          const merged = [...map.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))
+          if (merged.length !== prev.length) changed = true
+          by[key] = { days: merged, ok: (by[key] && by[key].ok) || v.ok }
+        }
+        if (changed) {
+          this.indexCache = { byKey: by, updatedAt: new Date().toISOString() }
+          try {
+            await setKv(INDEX_KEY, this.indexCache)
+          } catch {
+            /* 缓存写失败忽略 */
+          }
+        }
+      } catch {
+        /* 指数拉取失败不影响主流程 */
+      } finally {
+        this.indexSyncing = false
+      }
+    },
+
+    // 单只股票的逐日走势（按需计算，不进入全局序列避免每次 recompute 都重算）
+    stockSeries(market, code) {
+      const currentPrices = {}
+      for (const p of this.positions) currentPrices[p.market + ':' + p.code] = p.price
+      const today = new Date().toISOString().slice(0, 10)
+      return holdingSeries(this.trades, currentPrices, this.rates, today, this.klineCache.bySymbol, market, code)
     },
 
     // 依据交易记录得出需要的股票清单：{ key: { market, code, name, first(最早建仓日), initial? } }

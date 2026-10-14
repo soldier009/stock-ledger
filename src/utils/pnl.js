@@ -47,6 +47,10 @@ export function buildPnlRows(positions = [], realizedEvents = [], closedRounds =
         mv: 0,
         floating: 0,
         realized: 0,
+        // 今日盈亏（人民币）：只有当前持仓且有昨收才有值，hasToday 用来区分「无行情」与「今日 0」
+        today: 0,
+        todayBase: 0,
+        hasToday: false,
         closed: true, // 有持仓时置 false
         tag: '[]',
         purpose: '',
@@ -64,6 +68,9 @@ export function buildPnlRows(positions = [], realizedEvents = [], closedRounds =
     row.cost = costOf(p)
     row.mv = Number(p.mvCny) || 0
     row.floating = floatingOf(p)
+    row.today = Number(p.dayCny) || 0
+    row.todayBase = Number(p.dayBaseCny) || 0
+    row.hasToday = p.dayCny !== null && p.dayCny !== undefined
     row.tag = p.tag || '[]'
     row.purpose = String(p.purpose || '')
     row.pos = p
@@ -92,7 +99,9 @@ export function buildPnlRows(positions = [], realizedEvents = [], closedRounds =
     ...r,
     totalPnl: r.floating + r.realized,
     returnPct: r.cost > 0 ? (r.floating / r.cost) * 100 : null,
-    realizedPct: r.cost > 0 ? (r.realized / r.cost) * 100 : null
+    realizedPct: r.cost > 0 ? (r.realized / r.cost) * 100 : null,
+    // 今日涨跌幅 = 今日盈亏 ÷ 昨收市值
+    todayPct: r.hasToday && r.todayBase > 0 ? (r.today / r.todayBase) * 100 : null
   }))
   rows.sort((a, b) => b.cost - a.cost || b.totalPnl - a.totalPnl)
   return rows
@@ -106,20 +115,29 @@ export function sumRows(rows = []) {
     floating: 0,
     realized: 0,
     totalPnl: 0,
+    today: 0,
+    todayBase: 0,
     count: rows.length,
     closedCount: 0
   }
+  let todayCount = 0
   for (const r of rows) {
     s.cost += Number(r.cost) || 0
     s.mv += Number(r.mv) || 0
     s.floating += Number(r.floating) || 0
     s.realized += Number(r.realized) || 0
     s.totalPnl += Number(r.totalPnl) || 0
+    s.today += Number(r.today) || 0
+    s.todayBase += Number(r.todayBase) || 0
+    if (r.hasToday) todayCount += 1
     if (r.closed) s.closedCount += 1
   }
+  // 一只都没拿到行情时置 false：界面显示「—」而不是 0，避免与「今日持平」混淆
+  s.hasToday = todayCount > 0
   s.returnPct = s.cost > 0 ? (s.floating / s.cost) * 100 : null
   s.realizedPct = s.cost > 0 ? (s.realized / s.cost) * 100 : null
   s.totalPnlPct = s.cost > 0 ? (s.totalPnl / s.cost) * 100 : null
+  s.todayPct = s.hasToday && s.todayBase > 0 ? (s.today / s.todayBase) * 100 : null
   return s
 }
 

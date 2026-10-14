@@ -343,7 +343,7 @@ export function buildClosedRounds(trades) {
  * tagOf(market, code) -> 该股票的归组标签；不传时按标签拆分的结果全部落在 NO_TAG
  * 返回：{ date, cash, marketValue, byMarket, byTag, notes }
  */
-function buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, klines, tagOf) {
+function buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, klines, tagOf, opts = {}) {
   // —— 补录历史持仓（初始建仓）并入净资产序列起点 ——
   // 「新建仓」录入的是本软件记账前就已持有的股票，其买入与自动入金都发生在补录当天；
   // 若仅从补录日开始计算，会在该日凭空产生“记账前浮盈亏”的台阶。
@@ -445,7 +445,15 @@ function buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, 
   const ensurePos = (market, code) => {
     const key = `${market}:${code}`
     if (!posMap.has(key)) {
-      posMap.set(key, { market, code, shares: 0, basis: 0, avgCost: 0, tag: tagOf ? tagOf(market, code) || '' : '' })
+      posMap.set(key, {
+        market,
+        code,
+        shares: 0,
+        basis: 0,
+        avgCost: 0,
+        tag: tagOf ? tagOf(market, code) || '' : '',
+        purpose: opts.purposeOf ? opts.purposeOf(market, code) || '' : ''
+      })
     }
     return posMap.get(key)
   }
@@ -527,6 +535,8 @@ function buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, 
     let mv = 0
     const byMarket = {}
     const byTag = {}
+    const byPurpose = opts.purposeOf ? {} : null
+    const sym = opts.symbolDetail ? {} : null
     for (const p of posMap.values()) {
       if (p.shares > 1e-6) {
         const price = priceOf(`${p.market}:${p.code}`, date, p)
@@ -535,9 +545,14 @@ function buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, 
         byMarket[p.market] = (byMarket[p.market] || 0) + v
         const t = p.tag || NO_TAG
         byTag[t] = (byTag[t] || 0) + v
+        if (byPurpose) {
+          const u = p.purpose || NO_TAG
+          byPurpose[u] = (byPurpose[u] || 0) + v
+        }
+        if (sym) sym[`${p.market}:${p.code}`] = { shares: p.shares, basis: p.basis, value: v }
       }
     }
-    points.push({ date, cash, marketValue: mv, byMarket, byTag, notes: noteMap.get(date) || [] })
+    points.push({ date, cash, marketValue: mv, byMarket, byTag, byPurpose, sym, notes: noteMap.get(date) || [] })
   }
   return points
 }
@@ -557,13 +572,36 @@ export function netValueSeries(trades, cashFlows, currentPrices, rates, currentD
  * 资产曲线：逐日持仓市值，并按市场 / 按标签拆出各分组市值（不含现金）
  * tagOf 与 NO_TAG 同 buildDailyAssets
  */
-export function assetValueSeries(trades, cashFlows, currentPrices, rates, currentDate, klines, tagOf) {
-  return buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, klines, tagOf).map((p) => ({
+export function assetValueSeries(trades, cashFlows, currentPrices, rates, currentDate, klines, tagOf, opts = {}) {
+  return buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, klines, tagOf, opts).map((p) => ({
     date: p.date,
     marketValue: p.marketValue,
     byMarket: p.byMarket,
-    byTag: p.byTag
+    byTag: p.byTag,
+    byPurpose: p.byPurpose
   }))
+}
+
+/**
+ * 单只股票的逐日走势（供「成本与盈亏 › 标的走势」页使用）
+ * 复用逐日重放逻辑：市值 = 当日持股 × 当日收盘 × 汇率，成本 = 移动加权成本 × 汇率。
+ * 只传入该股票的交易记录，因此时间轴从首次建仓日到今天（初始建仓同样并入起点）。
+ */
+export function holdingSeries(trades, currentPrices, rates, currentDate, klines, market, code) {
+  const list = (trades || []).filter((t) => t.market === market && t.code === code)
+  if (!list.length) return []
+  const rate = rateOf(market, rates)
+  const pts = buildDailyAssets(list, [], currentPrices, rates, currentDate, klines, null, { symbolDetail: true })
+  return pts
+    .map((p) => {
+      const d = (p.sym || {})[`${market}:${code}`] || null
+      const shares = d ? d.shares : 0
+      const cost = d ? d.basis * rate : 0
+      const value = d ? d.value : 0
+      return { date: p.date, shares, cost, value, floating: value - cost }
+    })
+    // 清仓后 shares 归零，保留最后一个点即可（曲线自然落到 0）
+    .filter((p, i, arr) => p.shares > 1e-6 || i === arr.length - 1)
 }
 
 /** 按日汇总已实现盈亏（用于盈亏日历） */
