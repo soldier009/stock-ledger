@@ -251,11 +251,9 @@ const assetChart = computed(() => {
 
 const assetHasData = computed(() => assetChart.value.series.some((s) => s.data.some((v) => Math.abs(v) > 0.005)))
 
-// 纵轴不从 0 起：贴着曲线画才能看清波动。
-// 下限 = 曲线最小值再往下留一点（振幅的 8%，曲线很平时按量级的 1%），
-// 既不至于像 0.9 那样留出大片空白，也不会让最低点贴在轴上难看。
-function axisMin(vals, dec = 0) {
-  if (!vals.length) return null
+// 纵轴贴着曲线画才能看清波动：上下都按振幅的 8% 留一点空隙
+//（曲线很平时按量级的 1%），既不留大片空白，也不会让极值贴在轴上。
+function bounds(vals) {
   let mn = Infinity
   let mx = -Infinity
   for (const v of vals) {
@@ -266,21 +264,29 @@ function axisMin(vals, dec = 0) {
   }
   if (mn === Infinity) return null
   const range = mx - mn
-  const pad = range > 0 ? range * 0.08 : Math.max(Math.abs(mn) * 0.01, 1)
-  const raw = mn - pad
+  return { mn, mx, pad: range > 0 ? range * 0.08 : Math.max(Math.abs(mx) * 0.01, 1) }
+}
+function axisMin(vals, dec = 0) {
+  const b = bounds(vals)
+  if (!b) return null
   const p = Math.pow(10, dec)
-  return Math.floor(raw * p) / p
+  return Math.floor((b.mn - b.pad) * p) / p
+}
+function axisMax(vals, dec = 0) {
+  const b = bounds(vals)
+  if (!b) return null
+  const p = Math.pow(10, dec)
+  return Math.ceil((b.mx + b.pad) * p) / p
 }
 
-// 各组是独立曲线（不堆叠），下限取所有曲线里的最小值
-const assetYMin = computed(() => {
-  const { series } = assetChart.value
-  if (!series.length) return 0
+// 各组是独立曲线（不堆叠），上下限取所有曲线的极值
+const assetYVals = computed(() => {
   const vals = []
-  for (const s of series) for (const v of s.data || []) if (Number(v) > 0.005) vals.push(Number(v))
-  const m = axisMin(vals)
-  return m === null ? 0 : m
+  for (const s of assetChart.value.series) for (const v of s.data || []) if (Number(v) > 0.005) vals.push(Number(v))
+  return vals
 })
+const assetYMin = computed(() => axisMin(assetYVals.value) ?? 0)
+const assetYMax = computed(() => axisMax(assetYVals.value))
 
 // ===== 资产曲线的收益对比（大盘指数）=====
 // 组合是金额、指数是点位，量纲不同：统一把区间起点归一化为 100，比较的是收益率
@@ -354,21 +360,34 @@ const compareSeries = computed(() => {
 
 const compareMode = computed(() => compareOn.value.length > 0 && compareSeries.value.length > 1)
 
-// 对比曲线下限：取所有归一化序列里的最小值，与资产曲线口径一致
-const compareYMin = computed(() => {
+// 对比曲线上下限：取所有归一化序列的极值，与资产曲线口径一致
+const compareYVals = computed(() => {
   const vals = []
   for (const s of compareSeries.value) {
     for (const v of s.data || []) {
       if (v !== null && v !== undefined && !Number.isNaN(v)) vals.push(Number(v))
     }
   }
-  return axisMin(vals, 2)
+  return vals
 })
+const compareYMin = computed(() => axisMin(compareYVals.value, 2))
+const compareYMax = computed(() => axisMax(compareYVals.value, 2))
 
 // 该指数是否已取到日K（未取到时在开关上标注「无数据」）
 function hasIndex(key) {
   const cache = (portfolio.indexCache && portfolio.indexCache.byKey) || {}
   return !!((cache[key] && cache[key].days) || []).length
+}
+
+/**
+ * 底部图例会随条目多少自动换行，行数不定；写死 bottom 会让图例压到日期刻度上。
+ * 按「名称总宽 ÷ 容器宽」估算行数，再据此加大 grid.bottom。
+ */
+function legendLines(names, el) {
+  const w = (el && el.clientWidth) || 340
+  let used = 0
+  for (const n of names) used += String(n).length * 11 + 30
+  return Math.max(1, Math.ceil(used / Math.max(140, w - 20)))
 }
 
 function drawCompareCurve() {
@@ -384,7 +403,7 @@ function drawCompareCurve() {
   chart.setOption(
     {
       ...commonOption(),
-      grid: { left: 52, right: 16, top: 24, bottom: 46 },
+      grid: { left: 52, right: 16, top: 24, bottom: 22 + legendLines(series.map((s) => s.name), assetRef.value) * 20 },
       legend: {
         data: series.map((s) => s.name),
         bottom: 4,
@@ -413,6 +432,7 @@ function drawCompareCurve() {
       yAxis: {
         type: 'value',
         min: compareYMin.value === null ? undefined : compareYMin.value,
+        max: compareYMax.value === null ? undefined : compareYMax.value,
         axisLabel: { color: '#94a3b8', fontSize: 10, formatter: (v) => (v - 100 >= 0 ? '+' : '') + (v - 100).toFixed(0) + '%' },
         splitLine: { lineStyle: { color: '#f1f5f9' } }
       },
@@ -468,7 +488,13 @@ function drawAssetCurve() {
   })
   chart.setOption({
     ...commonOption(),
-    grid: { left: 64, right: 20, top: multi ? 24 : 20, bottom: multi ? 48 : 34 },
+    grid: {
+      left: 64,
+      right: 20,
+      top: multi ? 24 : 20,
+      // 图例换行几行就留几行的高度，避免压住横轴日期
+      bottom: multi ? 22 + legendLines(series.map((s) => s.name), assetRef.value) * 20 : 34
+    },
     ...(multi
       ? {
           legend: {
@@ -505,6 +531,7 @@ function drawAssetCurve() {
     yAxis: {
       type: 'value',
       min: assetYMin.value,
+      max: assetYMax.value === null ? undefined : assetYMax.value,
       axisLabel: {
         color: '#94a3b8',
         fontSize: 10,
@@ -1360,10 +1387,11 @@ const pnlSlices = computed(() => {
   font-weight: 700;
   margin-top: 4px;
 }
+/* 页签放不下时换行显示，不再横向滚动（手机上更容易点全） */
 .curve-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
-  overflow-x: auto;
   padding-bottom: 2px;
 }
 .curve-chip {

@@ -321,12 +321,14 @@ onBeforeUnmount(() => {
             <div class="item-amount" :class="pnlClass(g.totalPnl)">{{ signed(g.totalPnl, 0) }}</div>
             <el-icon class="item-arrow"><ArrowRight /></el-icon>
           </div>
+          <!-- 与标的明细保持一致：标签在上、数值换行居中 -->
           <div class="pnl-row-meta">
-            <span>成本 {{ fmtMoney(g.cost, 0) }}</span>
-            <span>浮动 <b :class="pnlClass(g.floating)">{{ signed(g.floating, 0) }}</b></span>
-            <span>今日 <b :class="g.hasToday ? pnlClass(g.today) : ''">{{ todayText(g) }}</b></span>
-            <span>已实现 <b :class="pnlClass(g.realized)">{{ signed(g.realized, 0) }}</b></span>
-            <span>收益率 <b :class="pnlClass(g.returnPct)">{{ signedPct(g.returnPct) }}</b></span>
+            <div><span>成本</span><b>{{ fmtMoney(g.cost, 0) }}</b></div>
+            <div><span>市值</span><b>{{ fmtMoney(g.mv, 0) }}</b></div>
+            <div><span>浮动盈亏</span><b :class="pnlClass(g.floating)">{{ signed(g.floating, 0) }}</b></div>
+            <div><span>今日盈亏</span><b :class="g.hasToday ? pnlClass(g.today) : ''">{{ todayText(g) }}</b></div>
+            <div><span>已实现盈亏</span><b :class="pnlClass(g.realized)">{{ signed(g.realized, 0) }}</b></div>
+            <div><span>收益率</span><b :class="pnlClass(g.returnPct)">{{ signedPct(g.returnPct) }}</b></div>
           </div>
           <div class="comp-row-bar">
             <div class="bar-track">
@@ -544,17 +546,30 @@ onBeforeUnmount(() => {
   font-size: 14px;
   flex: 0 0 14px;
 }
+/* 与 .pnl-grid 同一套排布：自适应列数，标签在上、数值换行居中 */
 .pnl-row-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 4px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+  gap: 10px 6px;
+  margin-top: 8px;
+  /* 左侧色点占 22px，整体缩进对齐标题 */
   padding-left: 22px;
   font-size: 11px;
   color: var(--text-2, #64748b);
 }
+.pnl-row-meta > div {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
 .pnl-row-meta b {
+  display: block;
+  margin-top: 2px;
   font-weight: 600;
+  font-size: 12px;
+  line-height: 1.3;
+  color: #334155;
 }
 .comp-row-bar {
   display: flex;
