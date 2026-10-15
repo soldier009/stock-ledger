@@ -3,6 +3,7 @@
  * 个股日K（services/kline.js）与大盘指数（services/indexes.js）共用这套实现，
  * 避免两处各写一份 fetch / hosts / 解析器而逐渐走样（如少了 http 兜底域名）。
  */
+import { byDateAsc } from '../utils/sort'
 
 // 腾讯历史K：ifzq.gtimg.cn（无 web. 前缀）为当前可用入口；
 // web.ifzq.gtimg.cn 近期被腾讯 WAF 风控拦截（501），作为备用域名保留轮询
@@ -38,7 +39,7 @@ export function sortDays(list) {
     const cv = Number(c)
     if (d && cv > 0) map.set(d, cv)
   }
-  return [...map.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))
+  return [...map.entries()].sort(byDateAsc)
 }
 
 /**

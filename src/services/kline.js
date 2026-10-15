@@ -1,5 +1,6 @@
 import { tencentSymbol } from './quotes'
 import { tencentDay, eastmoneyDay } from './market-day'
+import { byDateAsc } from '../utils/sort'
 
 // 东方财富市场代码：105 纳斯达克 / 106 纽交所 / 107 美交所
 const US_MARKETS = [105, 106, 107]
@@ -51,7 +52,7 @@ function mergeDays(sets) {
       if (!map.has(d)) map.set(d, c)
     }
   }
-  return [...map.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))
+  return [...map.entries()].sort(byDateAsc)
 }
 
 /**

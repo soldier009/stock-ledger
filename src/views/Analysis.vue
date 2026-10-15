@@ -1780,4 +1780,3 @@ const pnlSlices = computed(() => {
   overflow: hidden !important;
 }
 </style>
-

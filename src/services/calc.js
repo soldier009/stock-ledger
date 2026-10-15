@@ -1,5 +1,6 @@
 import { rateOf } from '../utils/format'
 import { DEFAULT_BROKER } from '../constants'
+import { byDateAsc } from '../utils/sort'
 import dayjs from 'dayjs'
 
 /** 无标签持仓在「按标签」分组里的归组键 */
@@ -357,10 +358,13 @@ export function buildClosedRounds(trades) {
  */
 /**
  * 逐日资产重放（净资产曲线与资产曲线共用）
- * tagOf(market, code) -> 该股票的归组标签；不传时按标签拆分的结果全部落在 NO_TAG
- * 返回：{ date, cash, marketValue, byMarket, byTag, notes }
+ * meta：标的元信息查询器 { tagOf, purposeOf }（store.buildMetaResolver() 的产物），
+ *   传 null 时不拆分：按标签的结果全部落在 NO_TAG，不做按用途拆分。
+ * 返回：{ date, cash, marketValue, byMarket, byTag, byPurpose, notes }
  */
-function buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, klines, tagOf, opts = {}) {
+function buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, klines, meta, opts = {}) {
+  const tagOf = meta && meta.tagOf
+  const purposeOf = meta && meta.purposeOf
   // —— 补录历史持仓（初始建仓）并入净资产序列起点 ——
   // 「新建仓」录入的是本软件记账前就已持有的股票，其买入与自动入金都发生在补录当天；
   // 若仅从补录日开始计算，会在该日凭空产生“记账前浮盈亏”的台阶。
@@ -423,9 +427,7 @@ function buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, 
       if (meta && Array.isArray(meta.days) && meta.days.length) {
         barsByKey.set(
           key,
-          [...meta.days]
-            .filter((x) => x && x[0])
-            .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+          [...meta.days].filter((x) => x && x[0]).sort(byDateAsc)
         )
       }
     }
@@ -469,7 +471,7 @@ function buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, 
         basis: 0,
         avgCost: 0,
         tag: tagOf ? tagOf(market, code) || '' : '',
-        purpose: opts.purposeOf ? opts.purposeOf(market, code) || '' : ''
+        purpose: purposeOf ? purposeOf(market, code) || '' : ''
       })
     }
     return posMap.get(key)
@@ -558,7 +560,7 @@ function buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, 
     let mv = 0
     const byMarket = {}
     const byTag = {}
-    const byPurpose = opts.purposeOf ? {} : null
+    const byPurpose = purposeOf ? {} : null
     const sym = opts.symbolDetail ? {} : null
     for (const p of posMap.values()) {
       if (p.shares > 1e-6) {
@@ -593,10 +595,10 @@ export function netValueSeries(trades, cashFlows, currentPrices, rates, currentD
 
 /**
  * 资产曲线：逐日持仓市值，并按市场 / 按标签拆出各分组市值（不含现金）
- * tagOf 与 NO_TAG 同 buildDailyAssets
+ * meta 同 buildDailyAssets
  */
-export function assetValueSeries(trades, cashFlows, currentPrices, rates, currentDate, klines, tagOf, opts = {}) {
-  return buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, klines, tagOf, opts).map((p) => ({
+export function assetValueSeries(trades, cashFlows, currentPrices, rates, currentDate, klines, meta, opts = {}) {
+  return buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, klines, meta, opts).map((p) => ({
     date: p.date,
     marketValue: p.marketValue,
     byMarket: p.byMarket,

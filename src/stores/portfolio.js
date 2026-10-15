@@ -34,6 +34,7 @@ import { fetchDayKlines } from '../services/kline'
 import { INDEX_LIST, fetchIndexKlines } from '../services/indexes'
 import { rateOf, assetClass, parseTags } from '../utils/format'
 import { DEFAULT_BROKER } from '../constants'
+import { byDateAsc, byDateFieldAsc } from '../utils/sort'
 import { useSettingsStore } from './settings'
 
 // 行情日K缓存（IndexedDB，独立于 sqlite 备份；不触发本地脏标记）
@@ -176,29 +177,28 @@ export const usePortfolioStore = defineStore('portfolio', {
       this.stocks = all('SELECT * FROM stocks ORDER BY market, code')
     },
 
-    // 资产二级分类查询器：人工标注优先，未标注按市场与代码推断
-    _assetTypeResolver() {
+    // 标的元信息查询器：一次遍历 stocks 建好全部索引，返回三个取值函数。
+    // 标签/用途挂在「标的」上而非「持仓」上，因此即使标的已清仓，
+    // 历史上的已实现盈亏依然能按标签/用途归组。
+    // 原先 assetType / tag / purpose 三个 resolver 各扫一遍全表，一次 recompute 要扫 5 遍。
+    buildMetaResolver() {
       const typeByKey = new Map()
-      for (const s of this.stocks) typeByKey.set(s.market + ':' + s.code, s.asset_type || '')
-      return (market, code) => assetClass(market, code, typeByKey.get(market + ':' + code))
-    },
-
-    // 标签归组查询器：一只股票有多个标签时只取第一个，
-    // 保证各标签分组市值之和 = 总市值（资产曲线堆叠才有意义）
-    _tagResolver() {
       const tagByKey = new Map()
+      const purposeByKey = new Map()
       for (const s of this.stocks) {
+        const k = s.market + ':' + s.code
+        typeByKey.set(k, s.asset_type || '')
         const t = parseTags(s.tag)
-        tagByKey.set(s.market + ':' + s.code, t.length ? t[0] : '')
+        // 一只股票有多个标签时只取第一个，保证各标签分组市值之和 = 总市值
+        tagByKey.set(k, t.length ? t[0] : '')
+        purposeByKey.set(k, s.purpose || '')
       }
-      return (market, code) => tagByKey.get(market + ':' + code) || ''
-    },
-
-    // 用途标签查询器（单值，空表示未设置）
-    _purposeResolver() {
-      const byKey = new Map()
-      for (const s of this.stocks) byKey.set(s.market + ':' + s.code, s.purpose || '')
-      return (market, code) => byKey.get(market + ':' + code) || ''
+      return {
+        // 资产二级分类：人工标注优先，未标注按市场与代码推断
+        assetTypeOf: (market, code) => assetClass(market, code, typeByKey.get(market + ':' + code)),
+        tagOf: (market, code) => tagByKey.get(market + ':' + code) || '',
+        purposeOf: (market, code) => purposeByKey.get(market + ':' + code) || ''
+      }
     },
 
     // 生效汇率：已拉取过的 > 设置里手填的 > 内置兜底值。
@@ -268,9 +268,7 @@ export const usePortfolioStore = defineStore('portfolio', {
       // 每条已实现盈亏打上资产类别（股票/基金/可转债），供收益曲线按类别拆分；
       // 同时打上标签与用途：标签/用途挂在「标的」上而非「持仓」上，
       // 因此即使该标的已经清仓（不在 positions 里），历史上的已实现盈亏依然能按标签/用途归组
-      const assetTypeOf = this._assetTypeResolver()
-      const tagOf = this._tagResolver()
-      const purposeOf = this._purposeResolver()
+      const { assetTypeOf, tagOf, purposeOf } = this.buildMetaResolver()
       this.realizedEvents = r.realizedEvents.map((e) => {
         const t = tagOf(e.market, e.code)
         return {
@@ -377,9 +375,8 @@ export const usePortfolioStore = defineStore('portfolio', {
         r,
         today,
         this.klineCache.bySymbol,
-        this._tagResolver(),
-        // 同时按「用途」拆一份，供成本与盈亏页的分组曲线使用（与标签口径并列）
-        { purposeOf: this._purposeResolver() }
+        // tagOf 主维度；同一份索引里的 purposeOf 供成本与盈亏页的分组曲线使用（与标签口径并列）
+        this.buildMetaResolver()
       )
       this.drawdownStats = drawdown(this.netValue)
       // 与上面的市值/资产序列用同一份汇率 r，避免自定义汇率时日历盈亏与曲线口径不一致
@@ -407,7 +404,7 @@ export const usePortfolioStore = defineStore('portfolio', {
       if (dayReady && (quoteToday || hasTodayBar)) {
         rows = rows.filter((x) => x.date !== td)
         rows.push({ date: td, amount: dayAmt, base: dayBase })
-        rows.sort((a, b) => (a.date < b.date ? -1 : 1))
+        rows.sort(byDateFieldAsc)
       }
       this.dailyHolding = rows
     },
@@ -458,7 +455,7 @@ export const usePortfolioStore = defineStore('portfolio', {
           const prev = (by[key] && by[key].days) || []
           const map = new Map(prev.map((d) => [d[0], d[1]]))
           for (const [d, c] of v.days || []) map.set(d, c)
-          const merged = [...map.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))
+          const merged = [...map.entries()].sort(byDateAsc)
           if (merged.length !== prev.length) changed = true
           by[key] = { days: merged, ok: (by[key] && by[key].ok) || v.ok }
         }
@@ -616,7 +613,7 @@ export const usePortfolioStore = defineStore('portfolio', {
                   updated: today,
                   // 整段补全时按来源是否完整标记；增量补齐不降低已有完整度
                   ok: job.full ? !!got.complete : meta.ok === true,
-                  days: [...merged.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))
+                  days: [...merged.entries()].sort(byDateAsc)
                 }
                 changed = true
               }

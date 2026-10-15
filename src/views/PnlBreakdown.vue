@@ -1,8 +1,7 @@
 <script setup>
-import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, ArrowRight } from '@element-plus/icons-vue'
-import * as echarts from 'echarts'
 import dayjs from 'dayjs'
 import { usePortfolioStore } from '../stores/portfolio'
 import { fmtMoney, fmtNum, fmtPct, marketLabel, pnlClass } from '../utils/format'
@@ -16,6 +15,7 @@ import {
 import { buildPnlRows, sumRows, groupRows, untaggedRows, hasForeignRealized } from '../utils/pnl'
 import DonutChart from '../components/DonutChart.vue'
 import PnlSumBar from '../components/PnlSumBar.vue'
+import { useEcharts } from '../utils/echarts'
 
 const route = useRoute()
 const router = useRouter()
@@ -119,7 +119,8 @@ const GROUP_RANGES = [
 ]
 const groupRange = ref('1y')
 const groupRef = ref(null)
-let groupChart = null
+// 二级曲线的生命周期交给公共封装（原来漏了窗口 resize 监听，转屏后不自适宽）
+const { get: getGroupChart, resize: resizeGroupChart } = useEcharts(groupRef)
 
 const groupPoints = computed(() => {
   if (level.value.stage !== 2) return []
@@ -142,8 +143,8 @@ const groupPoints = computed(() => {
 
 function drawGroupCurve() {
   if (level.value.stage !== 2) return
-  if (!groupRef.value) return
-  if (!groupChart) groupChart = echarts.init(groupRef.value)
+  const groupChart = getGroupChart()
+  if (!groupChart) return
   const pts = groupPoints.value
   if (!pts.length) {
     groupChart.clear()
@@ -211,19 +212,12 @@ watch(
     nextTick(() => {
       if (level.value.stage === 2) {
         drawGroupCurve()
-        if (groupChart) groupChart.resize()
+        resizeGroupChart()
       }
     })
   },
   { immediate: true, deep: false }
 )
-
-onBeforeUnmount(() => {
-  if (groupChart) {
-    groupChart.dispose()
-    groupChart = null
-  }
-})
 </script>
 
 <template>
