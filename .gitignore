@@ -12,6 +12,7 @@ generated-icons/
 # 本地 http 静态服务日志（不入库）
 http-local.err
 http-local.log
+vite-dev.log
 
 dev.log
 dev.err

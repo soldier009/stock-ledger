@@ -8,7 +8,6 @@ export const DIM_PURPOSE = 'purpose'
 // 按个股：不做分组，每只持仓单独一块（与总览「持仓分布-按个股」同口径）
 export const DIM_STOCK = 'stock'
 export const UNTAGGED = '未分类'
-export const CASH_KEY = '__cash__'
 export const CASH_COLOR = '#cbd5e1'
 export const PALETTE = [
   '#dc2626',

@@ -6,6 +6,13 @@ import dayjs from 'dayjs'
 export const NO_TAG = '未分类'
 
 /**
+ * 金额/数量兜底：脏数据（缺字段、undefined、空串）会算出 NaN，
+ * 而 NaN 会顺着「成本 → 持仓盈亏 → 市值 → 曲线」一路污染下去且不报错。
+ * 涉及金额与股数的乘法统一走这里。
+ */
+const n = (v) => Number(v) || 0
+
+/**
  * 核心计算引擎：按时间顺序重放交易记录
  * 成本核算方式：移动加权平均
  * 现金按券商分账：每笔交易/资金流水归属于其所在券商账户
@@ -43,18 +50,21 @@ export function computeAll(trades, cashFlows, defaultBroker = DEFAULT_BROKER) {
     const tax = Number(t.tax) || 0
     const type = t.type
 
+    const price = n(t.price)
     if (type === 'buy' || type === 'rights') {
       const p = ensurePos(t)
-      const cost = Number(t.price) * Number(t.shares) + fee + tax
+      const cost = price * n(t.shares) + fee + tax
       p.basis += cost
-      p.shares += Number(t.shares)
+      p.shares += n(t.shares)
       p.avgCost = p.shares > 0 ? p.basis / p.shares : 0
       addCash(t.broker, -cost)
     } else if (type === 'sell') {
       const p = posMap.get(keyOf(t))
-      if (p && p.shares > 0) {
-        const qty = Math.min(Number(t.shares), p.shares)
-        const realized = (Number(t.price) - p.avgCost) * qty - fee - tax
+      const want = n(t.shares)
+      const held = p ? p.shares : 0
+      const qty = Math.min(want, held)
+      if (qty > 0) {
+        const realized = (price - p.avgCost) * qty - fee - tax
         totalRealized += realized
         realizedEvents.push({
           id: t.id,
@@ -68,8 +78,13 @@ export function computeAll(trades, cashFlows, defaultBroker = DEFAULT_BROKER) {
         p.basis -= p.avgCost * qty
         p.shares -= qty
         p.avgCost = p.shares > 0 ? p.basis / p.shares : 0
-        addCash(t.broker, Number(t.price) * qty - fee - tax)
+        addCash(t.broker, price * qty - fee - tax)
       }
+      // 卖出数量超过持仓（早期买入记录缺失 / 导入数据有出入）：多出的部分没有
+      // 成本可结转，不能算已实现盈亏，但钱确实到账了 —— 计入现金，
+      // 否则这笔资金会凭空消失（手续费已在上面整笔扣除，这里不再重复扣）。
+      const extra = want - qty
+      if (extra > 0) addCash(t.broker, price * extra)
     } else if (type === 'div') {
       const amt = Number(t.amount) || 0
       if (amt !== 0) {
@@ -87,7 +102,7 @@ export function computeAll(trades, cashFlows, defaultBroker = DEFAULT_BROKER) {
       }
     } else if (type === 'gift') {
       const p = ensurePos(t)
-      p.shares += Number(t.shares)
+      p.shares += n(t.shares)
       p.avgCost = p.shares > 0 ? p.basis / p.shares : 0
     }
   }
@@ -236,11 +251,11 @@ export function buildClosedRounds(trades) {
       const s = stateOf(t)
       const r = s.open || newRound(s, t)
       if (t.name && !r.name) r.name = t.name
-      const qty = Number(t.shares) || 0
+      const qty = n(t.shares)
       const fee = Number(t.fee) || 0
       const tax = Number(t.tax) || 0
       // 送股只增加股数、不增加成本（与 computeAll 的 gift 分支一致）
-      const cost = type === 'gift' ? fee + tax : Number(t.price) * qty + fee + tax
+      const cost = type === 'gift' ? fee + tax : n(t.price) * qty + fee + tax
       r.shares += qty
       r.basis += cost
       r.avgCost = r.shares > EPS ? r.basis / r.shares : 0
@@ -250,12 +265,14 @@ export function buildClosedRounds(trades) {
     } else if (type === 'sell') {
       const s = stateOf(t)
       const r = s.open
+      // 卖出数量超过本轮剩余持仓（缺早期买入记录）：超出部分无成本可结转，
+      // 分批明细只按实际配对的部分展示（现金口径见 computeAll，已单独计入）
       if (!r || r.shares <= EPS) continue
-      const qty = Math.min(Number(t.shares) || 0, r.shares)
+      const qty = Math.min(n(t.shares), r.shares)
       const fee = Number(t.fee) || 0
       const tax = Number(t.tax) || 0
-      const realized = (Number(t.price) - r.avgCost) * qty - fee - tax
-      const proceeds = Number(t.price) * qty - fee - tax
+      const realized = (n(t.price) - r.avgCost) * qty - fee - tax
+      const proceeds = n(t.price) * qty - fee - tax
       r.basis -= r.avgCost * qty
       r.shares -= qty
       r.avgCost = r.shares > EPS ? r.basis / r.shares : 0
@@ -462,28 +479,34 @@ function buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, 
     const fee = Number(t.fee) || 0
     const tax = Number(t.tax) || 0
     const type = t.type
+    const price = n(t.price)
     if (type === 'buy' || type === 'rights') {
       const p = ensurePos(t.market, t.code)
-      const cost = Number(t.price) * Number(t.shares) + fee + tax
+      const cost = price * n(t.shares) + fee + tax
       p.basis += cost
-      p.shares += Number(t.shares)
+      p.shares += n(t.shares)
       p.avgCost = p.shares > 0 ? p.basis / p.shares : 0
       cash -= cost
     } else if (type === 'sell') {
       const p = posMap.get(`${t.market}:${t.code}`)
-      if (p && p.shares > 0) {
-        const qty = Math.min(Number(t.shares), p.shares)
+      const want = n(t.shares)
+      const held = p ? p.shares : 0
+      const qty = Math.min(want, held)
+      if (qty > 0) {
         p.basis -= p.avgCost * qty
         p.shares -= qty
         p.avgCost = p.shares > 0 ? p.basis / p.shares : 0
-        cash += Number(t.price) * qty - fee - tax
+        cash += price * qty - fee - tax
       }
+      // 与 computeAll 同口径：超出持仓的部分不计已实现盈亏，但资金计入现金
+      const extra = want - qty
+      if (extra > 0) cash += price * extra
     } else if (type === 'div') {
       const amt = Number(t.amount) || 0
       cash += amt
     } else if (type === 'gift') {
       const p = ensurePos(t.market, t.code)
-      p.shares += Number(t.shares)
+      p.shares += n(t.shares)
       p.avgCost = p.shares > 0 ? p.basis / p.shares : 0
     }
   }

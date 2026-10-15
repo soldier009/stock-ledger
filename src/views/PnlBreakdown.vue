@@ -15,6 +15,7 @@ import {
 } from '../utils/composition'
 import { buildPnlRows, sumRows, groupRows, untaggedRows, hasForeignRealized } from '../utils/pnl'
 import DonutChart from '../components/DonutChart.vue'
+import PnlSumBar from '../components/PnlSumBar.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -265,38 +266,7 @@ onBeforeUnmount(() => {
         height="300px"
       />
 
-      <div class="pnl-sum">
-        <div class="pnl-sum-item">
-          <div class="pnl-sum-label">成本</div>
-          <div class="pnl-sum-value">{{ fmtMoney(scopeSum.cost, 0) }}</div>
-        </div>
-        <div class="pnl-sum-item">
-          <div class="pnl-sum-label">市值</div>
-          <div class="pnl-sum-value">{{ fmtMoney(scopeSum.mv, 0) }}</div>
-        </div>
-        <div class="pnl-sum-item">
-          <div class="pnl-sum-label">浮动盈亏</div>
-          <div class="pnl-sum-value" :class="pnlClass(scopeSum.floating)">{{ signed(scopeSum.floating, 0) }}</div>
-        </div>
-        <div class="pnl-sum-item">
-          <div class="pnl-sum-label">今日盈亏</div>
-          <div class="pnl-sum-value" :class="scopeSum.hasToday ? pnlClass(scopeSum.today) : ''">
-            {{ todayText(scopeSum) }}
-          </div>
-        </div>
-        <div class="pnl-sum-item">
-          <div class="pnl-sum-label">已实现盈亏</div>
-          <div class="pnl-sum-value" :class="pnlClass(scopeSum.realized)">{{ signed(scopeSum.realized, 0) }}</div>
-        </div>
-        <div class="pnl-sum-item">
-          <div class="pnl-sum-label">合计盈亏</div>
-          <div class="pnl-sum-value" :class="pnlClass(scopeSum.totalPnl)">{{ signed(scopeSum.totalPnl, 0) }}</div>
-        </div>
-        <div class="pnl-sum-item">
-          <div class="pnl-sum-label">收益率</div>
-          <div class="pnl-sum-value" :class="pnlClass(scopeSum.returnPct)">{{ signedPct(scopeSum.returnPct) }}</div>
-        </div>
-      </div>
+      <PnlSumBar :sum="scopeSum" :signed="signed" :signed-pct="signedPct" :today-text="todayText" />
 
       <div v-if="foreign" class="muted pnl-note">港美股已实现盈亏按交易原币计，未折人民币</div>
 
@@ -352,38 +322,7 @@ onBeforeUnmount(() => {
         <span class="muted">{{ scoped.length }} 项</span>
       </div>
 
-      <div class="pnl-sum">
-        <div class="pnl-sum-item">
-          <div class="pnl-sum-label">成本</div>
-          <div class="pnl-sum-value">{{ fmtMoney(scopeSum.cost, 0) }}</div>
-        </div>
-        <div class="pnl-sum-item">
-          <div class="pnl-sum-label">市值</div>
-          <div class="pnl-sum-value">{{ fmtMoney(scopeSum.mv, 0) }}</div>
-        </div>
-        <div class="pnl-sum-item">
-          <div class="pnl-sum-label">浮动盈亏</div>
-          <div class="pnl-sum-value" :class="pnlClass(scopeSum.floating)">{{ signed(scopeSum.floating, 0) }}</div>
-        </div>
-        <div class="pnl-sum-item">
-          <div class="pnl-sum-label">今日盈亏</div>
-          <div class="pnl-sum-value" :class="scopeSum.hasToday ? pnlClass(scopeSum.today) : ''">
-            {{ todayText(scopeSum) }}
-          </div>
-        </div>
-        <div class="pnl-sum-item">
-          <div class="pnl-sum-label">已实现盈亏</div>
-          <div class="pnl-sum-value" :class="pnlClass(scopeSum.realized)">{{ signed(scopeSum.realized, 0) }}</div>
-        </div>
-        <div class="pnl-sum-item">
-          <div class="pnl-sum-label">合计盈亏</div>
-          <div class="pnl-sum-value" :class="pnlClass(scopeSum.totalPnl)">{{ signed(scopeSum.totalPnl, 0) }}</div>
-        </div>
-        <div class="pnl-sum-item">
-          <div class="pnl-sum-label">收益率</div>
-          <div class="pnl-sum-value" :class="pnlClass(scopeSum.returnPct)">{{ signedPct(scopeSum.returnPct) }}</div>
-        </div>
-      </div>
+      <PnlSumBar :sum="scopeSum" :signed="signed" :signed-pct="signedPct" :today-text="todayText" />
 
       <div v-if="foreign" class="muted pnl-note">港美股已实现盈亏按交易原币计，未折人民币</div>
 
@@ -604,27 +543,7 @@ onBeforeUnmount(() => {
   font-size: 11px;
   margin-bottom: 4px;
 }
-/* 合计条：六个指标两行铺开 */
-.pnl-sum {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
-  margin: 6px 0 12px;
-}
-.pnl-sum-item {
-  background: #f8fafc;
-  border-radius: 8px;
-  padding: 8px 10px;
-}
-.pnl-sum-label {
-  font-size: 11px;
-  color: var(--text-2, #64748b);
-}
-.pnl-sum-value {
-  font-size: 14px;
-  font-weight: 600;
-  margin-top: 2px;
-}
+/* 合计条样式已随 PnlSumBar 组件迁走（scoped 样式对子组件内部不生效） */
 .pnl-detail {
   padding: 10px 0;
   border-bottom: 1px solid #f8fafc;

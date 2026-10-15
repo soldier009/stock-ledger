@@ -1,8 +1,8 @@
 <script setup>
-import { ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
-import * as echarts from 'echarts'
+import { ref, watch, onMounted, nextTick } from 'vue'
 import { fmtNum } from '../utils/format'
 import { PALETTE } from '../utils/composition'
+import { useEcharts } from '../utils/echarts'
 
 // 环形图：中心可显示标题 + 数值，扇区颜色取自 item.color，缺省按调色板顺序取色
 const props = defineProps({
@@ -17,11 +17,12 @@ const props = defineProps({
 })
 
 const el = ref(null)
-let chart = null
+// 实例的初始化 / resize / 销毁交给公共封装（本组件是常驻容器，用默认配置即可）
+const { get: getChart } = useEcharts(el)
 
 function draw() {
-  if (!el.value) return
-  if (!chart) chart = echarts.init(el.value)
+  const chart = getChart()
+  if (!chart) return
   const data = props.items
     .filter((it) => (Number(it.value) || 0) > 0)
     .map((it) => ({
@@ -96,19 +97,9 @@ watch(
 )
 watch(() => [props.centerLabel, props.centerValue, props.centerSub, props.showLabel], () => draw())
 
-function onResize() {
-  chart && chart.resize()
-}
-
 onMounted(async () => {
   await nextTick()
   draw()
-  window.addEventListener('resize', onResize)
-})
-
-onBeforeUnmount(() => {
-  window.removeEventListener('resize', onResize)
-  if (chart) chart.dispose()
 })
 </script>
 

@@ -17,10 +17,7 @@ const showCurve = ref(false)
 const showClosed = ref(false)
 const showMoney = ref(true)
 
-const latest = computed(() => {
-  const s = portfolio.netValue
-  return s.length ? s[s.length - 1] : { netValue: portfolio.totals.totalAssets }
-})
+const latest = computed(() => portfolio.lastNetPoint)
 
 const todayChange = computed(() => {
   const s = portfolio.netValue

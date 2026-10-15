@@ -287,10 +287,6 @@ export async function initDB() {
   return db
 }
 
-export function getDB() {
-  return db
-}
-
 function normParams(params) {
   return (params || []).map((v) => (v === undefined ? null : v))
 }

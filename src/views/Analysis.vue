@@ -1,7 +1,6 @@
 <script setup>
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import * as echarts from 'echarts'
 import dayjs from 'dayjs'
 import { usePortfolioStore } from '../stores/portfolio'
 import { Calendar, ArrowRight } from '@element-plus/icons-vue'
@@ -11,6 +10,7 @@ import { RANGE_OPTIONS, rangeBounds } from '../utils/dateRange'
 import { buildPnlRows, sumRows, hasForeignRealized } from '../utils/pnl'
 import { INDEX_LIST } from '../services/indexes'
 import { getKv, setKv } from '../db'
+import { createCharts, alpha } from '../utils/echarts'
 import DonutChart from '../components/DonutChart.vue'
 
 const portfolio = usePortfolioStore()
@@ -73,15 +73,11 @@ const drawdownRef = ref(null)
 const monthlyRef = ref(null)
 const yearlyRef = ref(null)
 
-const charts = {}
-
-
-
-/** 曲线配色：hex -> rgba */
-function alpha(hex, a) {
-  const n = parseInt(hex.slice(1), 16)
-  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`
-}
+// 多张图各自一个 key；容器被 v-if 销毁时用 charts.release(key) 释放
+const charts = createCharts()
+// 容器随 v-if 销毁后，旧图表实例需一并释放
+const initChart = (elRef, key) => charts.get(key, elRef.value)
+const resetChart = (key) => charts.release(key)
 
 const curveKindMeta = computed(() => CURVE_KINDS.find((k) => k.key === curveKind.value) || CURVE_KINDS[0])
 
@@ -108,20 +104,6 @@ const curveData = computed(() => {
 })
 
 const curveHasData = computed(() => curveData.value.some((p) => Math.abs(p.value) > 0.005))
-
-function initChart(ref, key) {
-  if (!ref.value) return null
-  if (!charts[key]) charts[key] = echarts.init(ref.value)
-  return charts[key]
-}
-
-// 容器随 v-if 销毁后，旧图表实例需一并释放
-function resetChart(key) {
-  if (charts[key]) {
-    charts[key].dispose()
-    delete charts[key]
-  }
-}
 
 function commonOption() {
   return {
@@ -720,7 +702,7 @@ watch(
   () => { drawVisible(); drawDrawdown() }
 )
 
-function onResize() { Object.values(charts).forEach((c) => c && c.resize()) }
+function onResize() { charts.resizeAll() }
 
 onMounted(async () => {
   await nextTick()
@@ -728,7 +710,7 @@ onMounted(async () => {
   drawDrawdown()
   window.addEventListener('resize', onResize)
 })
-onBeforeUnmount(() => { window.removeEventListener('resize', onResize); Object.values(charts).forEach((c) => c && c.dispose()) })
+onBeforeUnmount(() => { window.removeEventListener('resize', onResize); charts.disposeAll() })
 
 // 日历
 const calendarGrid = computed(() => {

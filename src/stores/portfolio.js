@@ -111,6 +111,14 @@ export const usePortfolioStore = defineStore('portfolio', {
   getters: {
     activeSymbols() {
       return this.positions.map((p) => ({ market: p.market, code: p.code }))
+    },
+    // 净资产曲线最后一点（序列还没算出来时回退到当前总资产口径）
+    // 总览与净资产走势浮层共用，避免两处各写一份回退逻辑
+    lastNetPoint() {
+      const s = this.netValue
+      if (s.length) return s[s.length - 1]
+      const t = this.totals || {}
+      return { date: '', netValue: t.totalAssets || 0, cash: t.cash || 0, marketValue: t.mvTotal || 0 }
     }
   },
   actions: {
@@ -193,13 +201,19 @@ export const usePortfolioStore = defineStore('portfolio', {
       return (market, code) => byKey.get(market + ':' + code) || ''
     },
 
-    recompute() {
-      const r = computeAll(this.trades, this.cashFlows, this.defaultBroker)
+    // 生效汇率：已拉取过的 > 设置里手填的 > 内置兜底值。
+    // recompute 与 refreshSeries 必须走同一份，否则市值曲线与日历盈亏口径会岔开
+    _effectiveRates() {
       const settings = useSettingsStore()
-      const rates = {
+      return {
         usd: this.rates.usd || settings.rates.usd || 7.2,
         hkd: this.rates.hkd || settings.rates.hkd || 0.92
       }
+    },
+
+    recompute() {
+      const r = computeAll(this.trades, this.cashFlows, this.defaultBroker)
+      const rates = this._effectiveRates()
 
       const stockMap = new Map()
       for (const s of this.stocks) stockMap.set(s.market + ':' + s.code, s)
@@ -351,10 +365,7 @@ export const usePortfolioStore = defineStore('portfolio', {
 
     // 持仓已由 recompute 算好；这里基于最新持仓、现价与日K缓存刷新三条时间序列
     refreshSeries(rates) {
-      const r = rates || {
-        usd: this.rates.usd || 7.2,
-        hkd: this.rates.hkd || 0.92
-      }
+      const r = rates || this._effectiveRates()
       const currentPrices = {}
       for (const p of this.positions) currentPrices[p.market + ':' + p.code] = p.price
       const today = new Date().toISOString().slice(0, 10)
@@ -371,7 +382,8 @@ export const usePortfolioStore = defineStore('portfolio', {
         { purposeOf: this._purposeResolver() }
       )
       this.drawdownStats = drawdown(this.netValue)
-      let rows = dailyHoldingPnl(this.trades, this.klineCache.bySymbol, this.rates)
+      // 与上面的市值/资产序列用同一份汇率 r，避免自定义汇率时日历盈亏与曲线口径不一致
+      let rows = dailyHoldingPnl(this.trades, this.klineCache.bySymbol, r)
       // “今天”这一格单独用实时行情口径：Σ 每只当前持仓 (现价 − 昨收) × 现持股
       // 与顶部「今日盈亏」指标同源，不区分当日是否买卖、不依赖今日日K是否已更新。
       const td = fmtDay(new Date())

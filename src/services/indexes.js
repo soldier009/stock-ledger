@@ -1,3 +1,5 @@
+import { tencentDay, eastmoneyDay } from './market-day'
+
 /**
  * 大盘指数：用于资产曲线的收益对比。
  *
@@ -20,64 +22,9 @@ const TENCENT_SYMBOL = { shIdx: 'sh000001', hs300: 'sh000300', zz500: 'sh000905'
 // 东方财富 secid：中证指数在 1 号市场（沪市），港美股指数在 100 号市场
 const EM_SID = { shIdx: '1.000001', hs300: '1.000300', zz500: '1.000905', hsi: '100.HSI', ndx: '100.NDX' }
 
-const TENCENT_HOSTS = [
-  'https://ifzq.gtimg.cn/appstock/app/fqkline/get',
-  'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get'
-]
-const EM_HOSTS = ['https://push2his.eastmoney.com/api/qt/stock/kline/get']
-
-async function getJSON(url) {
-  const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), 15000)
-  try {
-    const res = await fetch(url, { cache: 'no-store', signal: ctrl.signal })
-    if (!res.ok) throw new Error('HTTP ' + res.status)
-    return await res.json()
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
-/** 东方财富指数日线：[[date, close]] 升序 */
-async function emDays(secid, from, to) {
-  const fromNum = from.replace(/-/g, '')
-  const toNum = to.replace(/-/g, '')
-  for (const host of EM_HOSTS) {
-    try {
-      const url = `${host}?secid=${secid}&fields1=f1,f2,f3&fields2=f51,f52,f53,f54,f55,f56&klt=101&fqt=1&beg=${fromNum}&end=${toNum}&lmt=100000`
-      const j = await getJSON(url)
-      const klines = j && j.data && j.data.klines
-      if (!Array.isArray(klines) || !klines.length) continue
-      const out = klines
-        .map((s) => {
-          const p = s.split(',')
-          return [p[0], Number(p[2])]
-        })
-        .filter((x) => x[0] && x[1] > 0)
-      if (out.length) return out.sort((a, b) => (a[0] < b[0] ? -1 : 1))
-    } catch {
-      /* 换下一个域名 */
-    }
-  }
-  return null
-}
-
-/** 腾讯日线（指数符号如 hkHSI）：[[date, close]] 升序 */
-async function tencentDays(symbol, from, to) {
-  for (const base of TENCENT_HOSTS) {
-    try {
-      const url = `${base}?param=${symbol},day,${from},${to},800,qfq`
-      const j = await getJSON(url)
-      if (!j || j.code !== 0) continue
-      const node = j.data && (j.data[symbol] || j.data[Object.keys(j.data || {})[0]])
-      const rows = (node && (node.qfqday || node.day)) || []
-      const out = rows.map((r) => [r[0], Number(r[2])]).filter((x) => x[0] && x[1] > 0)
-      if (out.length) return out.sort((a, b) => (a[0] < b[0] ? -1 : 1))
-    } catch {
-      /* 换下一个域名 */
-    }
-  }
-  return null
+// 东方财富指数日线：[[date, close]] 升序（与个股共用抓取层，含 http 兜底域名）
+function emDays(secid, from, to) {
+  return eastmoneyDay([secid], from, to)
 }
 
 /**
@@ -90,7 +37,7 @@ export async function fetchIndexKlines(items) {
   await Promise.all(
     items.map(async ({ key, from, to }) => {
       let days = null
-      if (TENCENT_SYMBOL[key]) days = await tencentDays(TENCENT_SYMBOL[key], from, to)
+      if (TENCENT_SYMBOL[key]) days = await tencentDay(TENCENT_SYMBOL[key], from, to)
       if (!days && EM_SID[key]) days = await emDays(EM_SID[key], from, to)
       out[key] = { days: days || [], ok: !!(days && days.length) }
     })

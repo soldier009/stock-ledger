@@ -50,10 +50,6 @@ export function fmtPct(v, digits = 2) {
   return v.toFixed(digits) + '%'
 }
 
-export function fmtDate(d) {
-  return dayjs(d).format('YYYY-MM-DD')
-}
-
 export function fmtTime(dt) {
   if (!dt) return ''
   return dayjs(dt).format('HH:mm:ss')

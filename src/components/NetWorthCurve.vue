@@ -1,19 +1,26 @@
 <script setup>
-import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
-import * as echarts from 'echarts'
+import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import dayjs from 'dayjs'
 import { ArrowLeft, TrendCharts, Wallet } from '@element-plus/icons-vue'
 import { usePortfolioStore } from '../stores/portfolio'
 import { fmtMoney, fmtNum, fmtPct, pnlClass } from '../utils/format'
 import { useOverlayHistory } from '../utils/useOverlayHistory'
+import { useEcharts } from '../utils/echarts'
 
 const props = defineProps({ modelValue: Boolean })
 const emit = defineEmits(['update:modelValue'])
 
 const portfolio = usePortfolioStore()
 const chartRef = ref(null)
-let chart = null
-let ro = null
+// 浮层用 v-if 挂载：容器反复出现/消失，尺寸为 0 时也不能画。
+// 公共封装负责实例复用（含容器重建后自动重建实例）、resize 监听与销毁，
+// 尺寸到位后的补画逻辑通过 onResize 回调交给本组件的 draw()。
+const { get: getChart, dispose: destroyChart } = useEcharts(chartRef, {
+  onResize: () => {
+    const el = chartRef.value
+    if (el && el.offsetWidth && el.offsetHeight) draw()
+  }
+})
 
 const visible = computed({
   get: () => props.modelValue,
@@ -58,10 +65,7 @@ const dayData = computed(() => {
   )
 })
 
-const latest = computed(() => {
-  const s = portfolio.netValue
-  return s.length ? s[s.length - 1] : { netValue: portfolio.totals.totalAssets }
-})
+const latest = computed(() => portfolio.lastNetPoint)
 
 // 净资产曲线口径说明：用于确认“补录历史持仓（初始建仓）并入起点”是否生效
 const initialInfo = computed(() => {
@@ -263,6 +267,8 @@ function aggFlows(target, p) {
 }
 
 function drawDay() {
+  const chart = getChart()
+  if (!chart) return
   const data = dayData.value
   if (!data.length) {
     chart.clear()
@@ -384,6 +390,8 @@ function yearData() {
 }
 
 function drawMonth() {
+  const chart = getChart()
+  if (!chart) return
   const data = monthData()
   if (!data.length) {
     chart.clear()
@@ -421,6 +429,8 @@ function drawMonth() {
 }
 
 function drawYear() {
+  const chart = getChart()
+  if (!chart) return
   const data = yearData()
   if (!data.length) {
     chart.clear()
@@ -460,46 +470,12 @@ function drawYear() {
 function draw() {
   const el = chartRef.value
   if (!el || !el.offsetWidth || !el.offsetHeight) return // 容器布局未完成，等 ResizeObserver 触发后再画
-  // 关闭时图表 DOM 已被 v-if 移除：若实例仍指向旧画布则重建，否则重开后会空白
-  if (chart && (!chart.getDom || !chart.getDom().isConnected)) {
-    try { chart.dispose() } catch (e) { /* ignore */ }
-    chart = null
-  }
-  if (!chart) chart = echarts.init(el)
+  const chart = getChart()
+  if (!chart) return
   chart.clear()
   if (mode.value === 'day') drawDay()
   else if (mode.value === 'month') drawMonth()
   else drawYear()
-}
-
-function destroyChart() {
-  if (ro) {
-    ro.disconnect()
-    ro = null
-  }
-  if (chart) {
-    try { chart.dispose() } catch (e) { /* ignore */ }
-    chart = null
-  }
-}
-
-function watchChartSize(on) {
-  const el = chartRef.value
-  if (!el || typeof ResizeObserver === 'undefined') return
-  if (on && !ro) {
-    ro = new ResizeObserver(() => {
-      if (!chartRef.value) return
-      if (chart) {
-        chart.resize()
-      } else if (chartRef.value.offsetWidth && chartRef.value.offsetHeight) {
-        draw()
-      }
-    })
-    ro.observe(el)
-  } else if (!on && ro) {
-    ro.disconnect()
-    ro = null
-  }
 }
 
 function close() {
@@ -555,8 +531,7 @@ watch(visible, async (v) => {
     mode.value = 'day'
     dayRange.value = '1m'
     await nextTick()
-    // 打开即挂载了新画布容器：用 ResizeObserver 兜底“布局未完成/尺寸为 0”，并随容器自适应
-    watchChartSize(true)
+    // 打开即挂载了新画布容器：尺寸为 0 时 draw 会跳过，由 ResizeObserver 在布局完成后补画
     draw()
   } else {
     // 关闭：图表 DOM 即将被 v-if 移除，销毁实例，避免下次打开复用失效实例导致空白
@@ -565,23 +540,8 @@ watch(visible, async (v) => {
   }
 })
 
-function onResize() {
-  if (chart) chart.resize()
-}
-
 onMounted(() => {
-  window.addEventListener('resize', onResize)
-  if (visible.value) {
-    nextTick(() => {
-      watchChartSize(true)
-      draw()
-    })
-  }
-})
-
-onBeforeUnmount(() => {
-  window.removeEventListener('resize', onResize)
-  destroyChart()
+  if (visible.value) nextTick(() => draw())
 })
 </script>
 

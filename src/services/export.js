@@ -1,7 +1,7 @@
 import * as XLSX from 'xlsx'
 import jsPDF from 'jspdf'
 import dayjs from 'dayjs'
-import { fmtMoney, fmtNum, fmtShares, shareValue, fmtPct, typeLabel, marketLabel } from '../utils/format'
+import { fmtNum, shareValue, fmtPct, typeLabel, marketLabel } from '../utils/format'
 
 /** 组装导出数据 */
 export function buildReportData(store) {

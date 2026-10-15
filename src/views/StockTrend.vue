@@ -1,12 +1,12 @@
 <script setup>
-import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, ArrowRight } from '@element-plus/icons-vue'
-import * as echarts from 'echarts'
 import dayjs from 'dayjs'
 import { usePortfolioStore } from '../stores/portfolio'
 import { fmtMoney, fmtNum, fmtShares, fmtPct, pnlClass, marketLabel, rateOf } from '../utils/format'
 import { buildPnlRows } from '../utils/pnl'
+import { useEcharts } from '../utils/echarts'
 
 const route = useRoute()
 const router = useRouter()
@@ -57,7 +57,9 @@ const RANGES = [
 ]
 const range = ref('1y')
 const chartRef = ref(null)
-let chart = null
+// 实例的初始化 / 窗口 resize 监听 / 卸载销毁交给公共封装
+// （原来这里漏了窗口 resize 监听，旋转屏幕后不会自适应）
+const { get: getChart, resize } = useEcharts(chartRef)
 
 const points = computed(() => {
   const all = portfolio.stockSeries(market, code) || []
@@ -104,8 +106,8 @@ const markData = computed(() => {
 })
 
 function draw() {
-  if (!chartRef.value) return
-  if (!chart) chart = echarts.init(chartRef.value)
+  const chart = getChart()
+  if (!chart) return
   const pts = points.value
   if (!pts.length) {
     chart.clear()
@@ -198,14 +200,7 @@ function draw() {
   )
 }
 
-watch([range, points], () => nextTick(() => { draw(); if (chart) chart.resize() }), { immediate: true, deep: false })
-
-onBeforeUnmount(() => {
-  if (chart) {
-    chart.dispose()
-    chart = null
-  }
-})
+watch([range, points], () => nextTick(() => { draw(); resize() }), { immediate: true, deep: false })
 </script>
 
 <template>
