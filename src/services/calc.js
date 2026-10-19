@@ -170,14 +170,26 @@ export function yearlyStockDetail(realizedEvents) {
   return [...map.values()].sort((a, b) => (a.year + a.code).localeCompare(b.year + b.code))
 }
 
-/** 累计已实现盈亏曲线（按日期） */
+/**
+ * 累计已实现盈亏曲线（按日）
+ * 同一天的多笔卖出合并成一个点：否则x轴会出现重复日期，
+ * 且曲线会在同一天叠出多余台阶（看起来像每笔各画了一段）。
+ * @returns [{ date, value(累计), dayAmount(当日合计), count(当日笔数) }]
+ */
 export function cumulativeRealized(realizedEvents) {
-  const sorted = [...realizedEvents].sort((a, b) => (a.date === b.date ? a.id - b.id : a.date.localeCompare(b.date)))
+  const byDay = new Map()
+  for (const e of realizedEvents || []) {
+    if (!e || !e.date) continue
+    const cur = byDay.get(e.date) || { amount: 0, count: 0 }
+    cur.amount += Number(e.amount) || 0
+    cur.count += 1
+    byDay.set(e.date, cur)
+  }
   const points = []
   let acc = 0
-  for (const e of sorted) {
-    acc += e.amount
-    points.push({ date: e.date, value: acc })
+  for (const [date, d] of [...byDay.entries()].sort(byDateAsc)) {
+    acc += d.amount
+    points.push({ date, value: acc, dayAmount: d.amount, count: d.count })
   }
   return points
 }

@@ -120,6 +120,16 @@ export const usePortfolioStore = defineStore('portfolio', {
       if (s.length) return s[s.length - 1]
       const t = this.totals || {}
       return { date: '', netValue: t.totalAssets || 0, cash: t.cash || 0, marketValue: t.mvTotal || 0 }
+    },
+    // 分红记录（含折人民币金额 cny），供分析页「分红」页签使用。
+    // 港美股分红是交易原币，这里与市值/盈亏走同一份生效汇率折算
+    divEvents() {
+      const rates = this._effectiveRates()
+      const fx = (m) => (m === 'HK' ? rates.hkd : m === 'US' ? rates.usd : 1)
+      return this.trades
+        .filter((t) => t.type === 'div')
+        .map((t) => ({ ...t, cny: (Number(t.amount) || 0) * fx(t.market) }))
+        .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
     }
   },
   actions: {
