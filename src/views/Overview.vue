@@ -179,18 +179,19 @@ const hYearMonths = computed(() => {
 
 const hasHolding = computed(() => portfolio.dailyHolding.length > 0)
 
-// 日历数据是否“完整可显示”：
-// - 缺整段历史（首次/换设备/失败）时，用状态提示代替数字，避免把残缺数据当成完整结果
-// - 仅增量补当天（每日常规刷新）时不阻断，正常显示已有数据
+// 日历显示状态。少数标的缺历史价格不再让整块日历不可用：
+// 数据层已经只累加能取到行情的标的（缺的自然不计入），所以缺失时照常显示，
+// 只在卡片底部说明哪些没算进去；只有缓存里一只数据都没有（首次/换设备/清缓存）
+// 时才用进度提示顶替，避免把大片残缺数字当成完整结果。
 const kCal = computed(() => {
   const p = portfolio
   if (!p.trades.length) return { kind: 'no-data' }
-  if (p.klineState === 'missing') return { kind: 'missing', list: p.klineMissing }
   if ((p.klineState === 'syncing' || p.klineState === 'idle') && p.klineBlocking) {
     return { kind: 'loading', total: p.klineTotal, done: p.klineFetched }
   }
   if (p.klineState === 'idle') return { kind: 'loading', total: 0, done: 0 }
-  return { kind: 'ok' }
+  // 可重试的缺失 + 数据源本身没有的（后者重试也没用）
+  return { kind: 'ok', missing: p.klineMissing, partial: p.klinePartial }
 })
 
 function hPrevMonth() { hDate.value = hDate.value.subtract(1, 'month') }
@@ -606,11 +607,37 @@ onMounted(() => {
         </div>
       </template>
 
+        <!-- 有标的缺历史价格：日历数字只含能取到行情的部分 -->
+        <div v-if="kCal.missing.length" class="h-status h-status-inline">
+          <div class="h-status-title">以下股票的历史价格还没获取到：</div>
+          <div class="h-missing-list">{{ kCal.missing.map((x) => x.name || x.code).join('、') }}</div>
+          <div class="muted" style="margin-top: 4px; line-height: 1.6">
+            这些股票的盈亏暂未计入日历（上方数字为其余股票的合计），不影响其它数据。
+          </div>
+          <el-button
+            size="small"
+            type="primary"
+            :loading="portfolio.klineSyncing"
+            style="margin-top: 10px"
+            @click="portfolio.retryKlines()"
+          >补全</el-button>
+        </div>
+
+        <!-- 数据源本身没有：重试也不会有，只说明，不给按钮 -->
+        <div v-if="kCal.partial.length" class="h-note">
+          <div v-for="x in kCal.partial" :key="x.key" class="h-note-item">
+            <b>{{ x.name || x.code }}</b>
+            <template v-if="x.since">数据源仅有 {{ x.since }} 起的价格</template>
+            <template v-else>数据源暂无价格数据</template>
+            ，此前盈亏未计入日历
+          </div>
+        </div>
+
         <div v-if="hasHolding" class="muted h-tip">按当日收盘价估算；分红/送股等除权日可能有偏差</div>
         <div v-else class="muted h-tip">暂无逐日数据（记录买入后，次日起会显示每天的持仓盈亏）</div>
       </template>
 
-      <!-- ===== 数据不齐：补全中 / 缺失可重试 / 暂无数据 ===== -->
+      <!-- ===== 缓存里一只数据都没有：补全中 / 暂无记录 ===== -->
       <template v-else>
         <!-- 首次补全历史价格（换设备/清缓存后） -->
         <div v-if="kCal.kind === 'loading'" class="h-status">
@@ -620,21 +647,6 @@ onMounted(() => {
           <div class="muted" style="margin-top: 4px; line-height: 1.6">
             换设备/清缓存后的首次打开，需要把每只股票从最早一笔交易到今天的历史价格补全，<br />请稍候，完成后会自动显示，无需手动操作。
           </div>
-        </div>
-        <!-- 有股票一直没拉到，明确告知并支持重试 -->
-        <div v-else-if="kCal.kind === 'missing'" class="h-status">
-          <div class="h-status-title">以下股票的历史价格还没获取到：</div>
-          <div class="h-missing-list">{{ kCal.list.map((x) => x.name || x.code).join('、') }}</div>
-          <div class="muted" style="margin-top: 4px; line-height: 1.6">
-            为避免把不完整的数据当成完整结果，日历暂不显示数字。请检查网络后重试。
-          </div>
-          <el-button
-            size="small"
-            type="primary"
-            :loading="portfolio.klineSyncing"
-            style="margin-top: 12px"
-            @click="portfolio.retryKlines()"
-          >重试补全</el-button>
         </div>
         <!-- 完全没有任何交易记录 -->
         <div v-else class="muted h-tip">暂无持仓数据，记录买入后这里会显示每天的持仓盈亏</div>
@@ -958,6 +970,30 @@ onMounted(() => {
   font-weight: 600;
   word-break: break-all;
   line-height: 1.6;
+}
+/* 日历照常显示时的缺失提示：不再是整块占位，只占一小条 */
+.h-calendar .h-status-inline {
+  align-items: flex-start;
+  gap: 6px;
+  padding: 12px 12px;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 10px;
+  margin-top: 12px;
+}
+/* 数据源本身没有的标的：淡灰说明，不提供按钮（重试也不会有） */
+.h-calendar .h-note {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-2);
+  line-height: 1.7;
+}
+.h-calendar .h-note-item {
+  word-break: break-all;
+}
+.h-calendar .h-note-item b {
+  color: #475569;
+  font-weight: 600;
 }
 </style>
 

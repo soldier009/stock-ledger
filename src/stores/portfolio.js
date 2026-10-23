@@ -23,6 +23,7 @@ import {
   cumulativeRealized,
   buildClosedRounds,
   netValueSeries,
+  netValueExFlows,
   assetValueSeries,
   holdingSeries,
   dailyRealized,
@@ -41,6 +42,8 @@ import { useSettingsStore } from './settings'
 const KLINE_KEY = 'stock-ledger-kline-v1'
 // 大盘指数日K缓存（供资产曲线收益对比）
 const INDEX_KEY = 'stock-ledger-index-v1'
+// 整段补全连续拿不到早于首建仓日的数据达到此次数后，认定数据源本身没有，不再反复拉取
+const KLINE_GIVEUP_TRIES = 3
 
 function fmtDay(d) {
   const m = d.getMonth() + 1
@@ -72,6 +75,8 @@ export const usePortfolioStore = defineStore('portfolio', {
     closedRounds: [],
     closedStat: { count: 0, stockCount: 0, realized: 0, win: 0, loss: 0 },
     netValue: [],
+    // 剔除入金/出金后的净值序列（时间加权），供回撤分析使用
+    netValueExFlow: [],
     // 资产曲线：逐日持仓市值 + 按市场 / 按标签的拆分
     assetSeries: [],
     dailyPnl: [],
@@ -85,9 +90,12 @@ export const usePortfolioStore = defineStore('portfolio', {
     klineError: '',
     // 日K数据完整性状态：'idle' | 'syncing' | 'ready' | 'missing'
     klineState: 'idle',
-    // 目前还缺日K的股票（按交易记录逐只核对）
+    // 还缺日K、且重试有机会拿到的股票（按交易记录逐只核对）
     klineMissing: [],
-    // 需要整段历史补全（首次/换设备）时阻断日历显示，避免残缺数字上屏
+    // 已尽力仍拿不到的股票：数据源本身没有该标的，或只提供 X 之后的数据（如新股上市前）。
+    // 这类重试也没用，不再计入缺失，只在界面上说明其盈亏未计入
+    klinePartial: [],
+    // 需要整段历史补全（首次/换设备，缓存里全无数据）时阻断日历显示，避免残缺数字上屏
     klineBlocking: false,
     // 本轮补全进度
     klineTotal: 0,
@@ -378,6 +386,8 @@ export const usePortfolioStore = defineStore('portfolio', {
       for (const p of this.positions) currentPrices[p.market + ':' + p.code] = p.price
       const today = new Date().toISOString().slice(0, 10)
       this.netValue = netValueSeries(this.trades, this.cashFlows, currentPrices, r, today, this.klineCache.bySymbol)
+      // 剔除入金/出金后的净值序列：回撤分析用它，避免把取钱当成亏损、把入金当成盈利
+      this.netValueExFlow = netValueExFlows(this.netValue)
       this.assetSeries = assetValueSeries(
         this.trades,
         this.cashFlows,
@@ -388,7 +398,8 @@ export const usePortfolioStore = defineStore('portfolio', {
         // tagOf 主维度；同一份索引里的 purposeOf 供成本与盈亏页的分组曲线使用（与标签口径并列）
         this.buildMetaResolver()
       )
-      this.drawdownStats = drawdown(this.netValue)
+      // 与回撤分析同口径：剔除入金/出金，否则取钱会被算成亏损
+      this.drawdownStats = drawdown(this.netValueExFlow)
       // 与上面的市值/资产序列用同一份汇率 r，避免自定义汇率时日历盈亏与曲线口径不一致
       let rows = dailyHoldingPnl(this.trades, this.klineCache.bySymbol, r)
       // “今天”这一格单独用实时行情口径：Σ 每只当前持仓 (现价 − 昨收) × 现持股
@@ -529,36 +540,56 @@ export const usePortfolioStore = defineStore('portfolio', {
       return map
     },
 
-    // 依据当前缓存核算：哪些股票仍缺完整日K（已确认 ok 且覆盖到最早建仓日的才算不缺）
-    _missingSymbols() {
+    // 依据当前缓存逐只核算日K完整度，分两档：
+    //   missing —— 还没请求过，或暂时失败，重试有机会拿到（界面提供「补全」按钮）
+    //   partial —— 已请求过覆盖首建仓日的区间、来源也判定完整，但数据源给不出那么早
+    //              （新股上市前 / 老股数据源只保留近年 / 停牌退市），重试也没用
+    // 返回 { missing, partial }，元素形如 { key, market, code, name, since }
+    // since = 数据源能提供的最早日期，完全没有该标的时为 null
+    _klineStatus() {
       const by = this.klineCache.bySymbol || {}
       const missing = []
+      const partial = []
       for (const [key, r] of this._requiredSymbols()) {
         const meta = by[key]
-        const good = meta && meta.ok === true && meta.from && meta.from <= r.first
-        if (!good) missing.push({ key, market: r.market, code: r.code, name: r.name })
+        const days = (meta && meta.days) || []
+        // 是否已请求过覆盖首建仓日的整段（不只是"拿到过一点数据"）
+        const tried = !!(meta && meta.ok === true && meta.from && meta.from <= r.first)
+        // 数据源给得出的最早日期是否已覆盖首建仓日
+        const since = days.length ? days[0][0] : null
+        const covered = !!since && since <= r.first
+        if (covered) continue
+        const item = { key, market: r.market, code: r.code, name: r.name, since }
+        // 请求过但给不出那么早，且已试够次数 —— 认定数据源本身没有，不再算缺失
+        if (tried && (Number(meta.tries) || 0) >= KLINE_GIVEUP_TRIES) partial.push(item)
+        else missing.push(item)
       }
-      return missing
+      return { missing, partial }
     },
 
     // 一次同步结束后核算最终状态（不发起网络请求）
     _finishKlineSync() {
-      const missing = this._missingSymbols()
+      const { missing, partial } = this._klineStatus()
       this.klineMissing = missing
+      this.klinePartial = partial
+      // 只有暂时拿不到的才算 missing；partial 属于数据源本身没有，不阻断日历
       this.klineState = missing.length ? 'missing' : 'ready'
       this.klineBlocking = false
     },
 
     /**
      * 同步历史日K（幂等）：
-     * - 需要的股票若没有“完整”缓存，会整段从最早建仓日拉取到今日（换设备/清缓存后的首次补全）；
-     * - 已有完整缓存的，仅增量补齐到今日；
-     * - 整段补全期间置 klineBlocking=true，界面应提示“补全中”，而不是把残缺数字显示出来。
+     * - 没请求过整段的，从最早建仓日整段拉到今日（换设备/清缓存后的首次补全）；
+     * - 已覆盖到最早建仓日的，仅增量补齐到今日；
+     * - 数据源本身给不出那么早的（新股未上市等），试满 KLINE_GIVEUP_TRIES 次后每天最多再试一次，
+     *   不再每次打开都整段重拉（否则这类标的会永远拉不到、白白耗流量）；
+     * - 仅当缓存里一只可用数据都没有时置 klineBlocking，让界面提示“补全中”而不是显示残缺数字。
      */
     async syncKlines() {
       if (this.klineSyncing || !this.trades.length) {
         if (!this.trades.length) {
           this.klineMissing = []
+          this.klinePartial = []
           this.klineState = 'ready'
           this.klineBlocking = false
         }
@@ -570,20 +601,32 @@ export const usePortfolioStore = defineStore('portfolio', {
       const isWeekend = dow === 0 || dow === 6
       const by = this.klineCache.bySymbol
       const jobs = []
-      let needFull = false
       for (const [key, r] of this._requiredSymbols()) {
         const meta = by[key]
-        // 完整覆盖判定：曾完整拉取过（ok）且缓存起点不晚于最早建仓日
-        const covered = meta && meta.ok === true && meta.from && meta.from <= r.first
-        if (!covered) {
-          // 缺整段：从最早建仓日拉到现在（含旧缓存缺 ok 标记的一次性修复）
+        const days = (meta && meta.days) || []
+        // 是否已请求过覆盖首建仓日的整段，且来源判定完整（缺口不在已取区间内部）
+        const tried = !!(meta && meta.ok === true && meta.from && meta.from <= r.first)
+        // 数据源给得出的最早日期是否已覆盖首建仓日
+        const covered = !!(days.length && days[0][0] <= r.first)
+        if (!tried) {
+          // 从没请求过整段：从最早建仓日拉到现在（含旧缓存缺 ok 标记的一次性修复）
           jobs.push({ key, market: r.market, code: r.code, from: r.first, full: true })
-          needFull = true
           continue
         }
-        // 已有完整历史：只增量补当天（交易日才拉；周末交给下一次）
+        if (!covered) {
+          const tries = Number(meta.tries) || 0
+          if (tries < KLINE_GIVEUP_TRIES) {
+            // 数据源给不出那么早，但还没试够次数：再试，可能是暂时失败
+            jobs.push({ key, market: r.market, code: r.code, from: r.first, full: true })
+          } else if (!isWeekend && meta.updated < today) {
+            // 已认定数据源本身没有（新股未上市等）：不再每次打开都整段重拉，
+            // 每天最多再试一次，这样新股上市后能自动补上而无需用户操作
+            jobs.push({ key, market: r.market, code: r.code, from: r.first, full: true, quiet: true })
+          }
+          continue
+        }
+        // 已覆盖：只增量补当天（交易日才拉；周末交给下一次）
         if (!isWeekend && meta.updated < today) {
-          const days = meta.days || []
           const lastBar = days.length ? days[days.length - 1][0] : ''
           if (lastBar && lastBar < today) {
             const after = dayAfter(lastBar)
@@ -597,9 +640,12 @@ export const usePortfolioStore = defineStore('portfolio', {
         return
       }
 
+      // 只有当缓存里一只可用数据都没有（首次打开/换设备/清缓存）时才阻断日历显示；
+      // 少数几只缺失不再让整块日历不可用
+      const usable = Object.values(by).filter((m) => m && m.days && m.days.length).length
       this.klineSyncing = true
       this.klineState = 'syncing'
-      this.klineBlocking = needFull
+      this.klineBlocking = usable === 0
       this.klineTotal = jobs.length
       this.klineFetched = 0
       try {
@@ -612,17 +658,37 @@ export const usePortfolioStore = defineStore('portfolio', {
                 { market: job.market, code: job.code, from: job.from, to: today }
               ])
               const got = res.data && res.data[job.key]
-              if (got && got.days && got.days.length) {
-                const meta = by[job.key] || { from: '', days: [] }
-                const prev = meta.days || []
+              const gotDays = (got && got.days) || []
+              const meta = by[job.key] || { from: '', days: [] }
+              if (job.full) {
+                // 整段补全：即使这只数据源完全没有，也要落一条缓存记录，
+                // 否则下次还会当成"没请求过"无限重拉
                 const merged = new Map()
-                for (const [d, c] of prev) merged.set(d, c)
-                for (const [d, c] of got.days) merged.set(d, c)
+                for (const [d, c] of meta.days || []) merged.set(d, c)
+                for (const [d, c] of gotDays) merged.set(d, c)
+                const days = [...merged.entries()].sort(byDateAsc)
+                // 数据源给不出早于首建仓日的数据时累加尝试次数，拿全了则清零
+                const earliest = days.length ? days[0][0] : ''
+                const reaches = !!earliest && earliest <= job.from
                 by[job.key] = {
                   from: meta.from && meta.from <= job.from ? meta.from : job.from,
                   updated: today,
-                  // 整段补全时按来源是否完整标记；增量补齐不降低已有完整度
-                  ok: job.full ? !!got.complete : meta.ok === true,
+                  // 一只都没有 = 数据源确实没有该标的（未上市/已退市），不算失败
+                  ok: gotDays.length ? !!got.complete : true,
+                  tries: reaches ? 0 : (Number(meta.tries) || 0) + 1,
+                  days
+                }
+                changed = true
+              } else if (gotDays.length) {
+                const merged = new Map()
+                for (const [d, c] of meta.days || []) merged.set(d, c)
+                for (const [d, c] of gotDays) merged.set(d, c)
+                by[job.key] = {
+                  from: meta.from && meta.from <= job.from ? meta.from : job.from,
+                  updated: today,
+                  // 增量补齐不降低已有完整度，也不动尝试次数
+                  ok: meta.ok === true,
+                  tries: Number(meta.tries) || 0,
                   days: [...merged.entries()].sort(byDateAsc)
                 }
                 changed = true
@@ -1041,6 +1107,7 @@ export const usePortfolioStore = defineStore('portfolio', {
       this.klineCache = { bySymbol: {}, updatedAt: '' }
       this.klineState = 'idle'
       this.klineMissing = []
+      this.klinePartial = []
       this.klineBlocking = false
       this.klineTotal = 0
       this.klineFetched = 0

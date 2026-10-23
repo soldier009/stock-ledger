@@ -606,6 +606,61 @@ export function netValueSeries(trades, cashFlows, currentPrices, rates, currentD
 }
 
 /**
+ * 剔除资金进出后的净资产序列（时间加权口径 TWR），供回撤分析使用。
+ *
+ * 直接拿净资产算回撤会把存取款当成盈亏：
+ *   账户 10 万取出 5 万 -> 净资产 -50%，会被算成一次巨大回撤（其实只是把钱取走了）；
+ *   反过来大额入金会抬高历史峰值，把真实的持仓亏损掩盖成「已修复」。
+ *
+ * 这里逐日剔除资金流后递推收益率：
+ *   当日收益率 r = (今日净值 − 当日净入金 − 昨日净值) / 昨日净值
+ *   累计净值   = 上一日累计净值 × (1 + r)
+ * 资金流只改变本金规模、不产生收益，因此既不进入 r，也不会造成净值跳变。
+ *
+ * 计入收益：持仓涨跌、现金分红、交易手续费等真实盈亏
+ * 予以剔除：手动入金/出金（kind==='flow'）
+ *
+ * 不计入资金流：补录历史持仓时自动生成的虚拟入金（kind==='initial'）。它在现金里
+ *   已被并入序列起点（见 buildDailyAssets 里 wsCash 的重定位），而注解仍记在原始发生日，
+ *   若照注解逐日剔除，会在原始日把起点就已经算过的钱再扣一次，凭空造出巨大跌幅
+ *   （曾出现「8/28→8/29 -39.67%」这种假回撤）。起点净资产本就是补录持仓的本金，不剔除。
+ *
+ * 上一日净值为 0（账户刚开立 / 资金刚进来）时算不出比率，
+ * 该段按无收益处理，并把累计净值重置为当日净值作为新的本金基准。
+ *
+ * @param {Array} series netValueSeries 的输出 [{ date, netValue, notes }]
+ * @returns {Array} [{ date, netValue, rawNetValue, flow }]，netValue 为剔除资金流后的净值
+ */
+export function netValueExFlows(series) {
+  if (!series || !series.length) return []
+  const flowOf = (notes) => {
+    let f = 0
+    for (const n of notes || []) {
+      // 只剔除手动入金/出金；补录建仓的虚拟入金见上方说明，不参与剔除
+      if (n.kind === 'flow') f += n.type === 'deposit' ? Number(n.amount) || 0 : -(Number(n.amount) || 0)
+    }
+    return f
+  }
+  const out = []
+  let prevRaw = Number(series[0].netValue) || 0
+  let adj = prevRaw
+  out.push({ date: series[0].date, netValue: adj, rawNetValue: prevRaw, flow: flowOf(series[0].notes) })
+  for (let i = 1; i < series.length; i++) {
+    const raw = Number(series[i].netValue) || 0
+    const flow = flowOf(series[i].notes)
+    if (prevRaw > 0) {
+      adj = adj * (1 + (raw - flow - prevRaw) / prevRaw)
+    } else {
+      // 上一点还没有净值：当日净值即新的本金基准，不存在收益率
+      adj = raw
+    }
+    out.push({ date: series[i].date, netValue: adj, rawNetValue: raw, flow })
+    prevRaw = raw
+  }
+  return out
+}
+
+/**
  * 资产曲线：逐日持仓市值，并按市场 / 按标签拆出各分组市值（不含现金）
  * meta 同 buildDailyAssets
  */

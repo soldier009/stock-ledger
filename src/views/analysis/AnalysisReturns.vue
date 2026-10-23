@@ -390,7 +390,8 @@ const ddScope = computed(() => rangeBounds(ddRange.value, ddCustomStart.value, d
 const ddPoints = computed(() => {
   const { start, end } = ddScope.value
   const startKey = start.format('YYYY-MM-DD')
-  const pts = portfolio.netValue
+  // 用剔除入金/出金后的净值序列：否则取钱会被当成亏损、入金会掩盖真实回撤
+  const pts = portfolio.netValueExFlow
   let seed = null
   for (const p of pts) {
     if (p.date <= startKey) seed = p
@@ -815,6 +816,9 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div ref="drawdownRef" class="chart"></div>
+      <div class="muted" style="margin-top: 6px; font-size: 11px; line-height: 1.6">
+        按剔除入金/出金后的净值计算（存取款只改变本金，不算盈亏）；含分红与手续费
+      </div>
     </div>
 
     <!-- 回撤事件：随所选区间变化，按跌幅从大到小排序 -->
