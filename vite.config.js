@@ -9,9 +9,12 @@ const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 
 // 构建时刻（dev 下就是 dev server 启动的时刻）。
 // 版本号是编译期常量，dev 时不会随 HMR 更新 —— 改了 package.json 后界面还显示旧版本，
 // 很容易误以为代码没生效。带上这个时间就能一眼看出「跑的是哪一次启动/构建」。
-const now = new Date()
+// 统一按北京时间（UTC+8）算：CI（GitHub Actions 的 runner）跑在 UTC，
+// 直接取运行环境本地时间会显示成早 8 小时的时刻，看着像陈旧构建。
+// 下面一律用 getUTC* —— 因为 now 已经偏移到 UTC+8 上了。
+const now = new Date(Date.now() + 8 * 3600 * 1000)
 const pad2 = (n) => String(n).padStart(2, '0')
-const buildTime = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())} ${pad2(now.getHours())}:${pad2(now.getMinutes())}`
+const buildTime = `${now.getUTCFullYear()}-${pad2(now.getUTCMonth() + 1)}-${pad2(now.getUTCDate())} ${pad2(now.getUTCHours())}:${pad2(now.getUTCMinutes())}`
 
 export default defineConfig({
   // 相对路径构建：同一份产物既能部署在域名根目录（CloudBase），也能部署在子目录（GitHub Pages）
