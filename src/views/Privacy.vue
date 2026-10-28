@@ -2,7 +2,7 @@
 import { useRouter } from 'vue-router'
 
 const router = useRouter()
-const APP_VERSION = __APP_VERSION__
+import { APP_VERSION } from 'virtual:build-info'
 </script>
 
 <template>

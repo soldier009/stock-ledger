@@ -6,6 +6,7 @@ import { registerSW } from 'virtual:pwa-register'
 import { usePortfolioStore } from './stores/portfolio'
 import { useSettingsStore } from './stores/settings'
 import { debounce } from './utils/debounce'
+import { APP_VERSION, BUILD_TIME } from 'virtual:build-info'
 
 const route = useRoute()
 const router = useRouter()
@@ -30,7 +31,7 @@ registerSW({
         if (prompted || nw.state !== 'installed') return
         prompted = true
         ElMessageBox.confirm(
-          `已下载新版本 v${__APP_VERSION__}，刷新后立即生效。若正在同步/备份，请稍后再刷新。`,
+          `已下载新版本 v${APP_VERSION}，刷新后立即生效。若正在同步/备份，请稍后再刷新。`,
           '发现新版本',
           { confirmButtonText: '立即刷新', cancelButtonText: '稍后', distinguishCancelAndClose: true }
         )
@@ -125,14 +126,15 @@ watch(
   <div v-if="!portfolio.ready" class="splash">
     <div class="splash-logo">📊</div>
     <div class="muted">正在加载数据...</div>
-    <div class="splash-ver">v{{ __APP_VERSION__ }}</div>
+    <div class="splash-ver">v{{ APP_VERSION }}</div>
   </div>
   <div v-else class="app" :class="{ 'has-offline-bar': !online, 'has-conflict-bar': settings.syncConflict && online }">
     <div v-if="!online" class="offline-bar">当前离线：行情刷新与云同步暂不可用</div>
     <div v-if="settings.syncConflict && online" class="conflict-bar" @click="goSettings">
       ⚠ 本地与云端在两边都有新改动，为避免误覆盖已暂停自动同步，点此选择方向
     </div>
-    <div class="ver-badge">v{{ __APP_VERSION__ }}</div>
+    <!-- 带上构建/启动时刻：dev 下版本号不会随 HMR 更新，只看 v1.8.1 分不清跑的是哪次启动 -->
+    <div class="ver-badge">v{{ APP_VERSION }} · {{ BUILD_TIME }}</div>
     <div class="page-wrap">
       <router-view />
     </div>

@@ -24,7 +24,7 @@ const backupStateMap = {
   ok: { text: '备份成功', cls: 'down' },
   error: { text: '备份失败', cls: 'up' }
 }
-const APP_VERSION = __APP_VERSION__
+import { APP_VERSION, BUILD_TIME } from 'virtual:build-info'
 
 function escHtml(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -112,7 +112,7 @@ function setRefresh(minutes) {
 
 function showVersion() {
   ElMessageBox.alert(
-    `股票记账本 v${APP_VERSION}。数据保存在本机浏览器（IndexedDB），通过 GitHub 私有仓库多端自动同步。`,
+    `股票记账本 v${APP_VERSION}，构建于 ${BUILD_TIME}。数据保存在本机浏览器（IndexedDB），通过 GitHub 私有仓库多端自动同步。`,
     '版本信息',
     { confirmButtonText: '知道了' }
   )
@@ -573,7 +573,7 @@ function commitRenamePurpose(oldTag) {
       <div class="srow" @click="showVersion">
         <el-icon class="ico"><InfoFilled /></el-icon>
         <span class="row-title">版本信息</span>
-        <span class="row-value">v{{ APP_VERSION }}</span>
+        <span class="row-value">v{{ APP_VERSION }} · {{ BUILD_TIME }}</span>
         <el-icon class="chev"><ArrowRight /></el-icon>
       </div>
       <div class="srow" @click="openSheet('docs')">

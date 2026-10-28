@@ -109,13 +109,6 @@ const passFilter = (item) =>
   (marketFilter.value === 'ALL' || item.market === marketFilter.value)
 
 /**
- * 日历格子里的圆点颜色按「当天发生的事件」走：中签绿、上市红、招股蓝、暗盘灰。
- * 可转债不再占用颜色 —— 那会让中签那天看起来是橙的，反而盖掉了事件本身；
- * 改用**方点**形状区分，颜色和类型各管一件事。
- */
-const dotColor = (e) => KIND_META[e.kinds[0]]?.color || '#94a3b8'
-
-/**
  * 某天的事件（已过市场筛选）。
  *
  * 带缓存：模板里每个日历格子都要调一两次（算圆点、判断「+N」），一个月 42 格就是上百次
@@ -143,18 +136,36 @@ function eventsOf(date) {
   return out
 }
 
-/** 单元格里显示的小圆点：按优先级取前 3 个不同新股 */
+/**
+ * 单元格里的小点：**同一类型的事件只显示一个**。
+ *
+ * 以前是「每只新股一个点」，同一天来三四只就排成一排，把日期都挤没了。
+ * 现在一个点代表「这天有这类事件」，有几只点开下面的卡片看。
+ *
+ * 可转债不占颜色（那会盖掉事件类型），改用**方点**形状：
+ * 某个类型当天只要有一只是可转债，那个点就是方的 —— 一眼能看出「这批里有转债」。
+ *
+ * @returns {{ kind: string, hasCb: boolean }[]} 按图例顺序，保证每天的点的先后稳定
+ */
 function dotsOf(date) {
   const evs = eventsOf(date)
-  const seen = new Set()
-  const out = []
+  const agg = new Map() // kind -> 是否含可转债
   for (const e of evs) {
-    if (seen.has(e.item.id)) continue
-    seen.add(e.item.id)
-    out.push(e)
-    if (out.length >= 3) break
+    const isCb = e.item.kind === 'cb'
+    for (const k of e.kinds) {
+      if (!agg.has(k)) agg.set(k, isCb)
+      else if (isCb) agg.set(k, true)
+    }
   }
-  return out
+  const ordered = LEGEND_KINDS.filter((k) => agg.has(k)).map((k) => ({
+    kind: k,
+    hasCb: agg.get(k)
+  }))
+  // 图例之外的类型（将来新增的话）补在后面，别默默丢掉
+  for (const [k, hasCb] of agg) {
+    if (!LEGEND_KINDS.includes(k)) ordered.push({ kind: k, hasCb })
+  }
+  return ordered
 }
 
 /** 该天是否有新股处于招股期（用于整格淡蓝底） */
@@ -420,14 +431,14 @@ onMounted(async () => {
           <template v-if="d">
             <span class="cell-date">{{ Number(d.slice(8)) }}</span>
             <div class="cell-dots">
-              <template v-for="(e, k) in dotsOf(d)" :key="k">
+              <template v-for="dot in dotsOf(d)" :key="dot.kind">
                 <!-- 中签用绿色星星，和其它「市场事件」的圆点一眼区分开 -->
-                <span v-if="e.kinds.includes('won')" class="cell-star">★</span>
+                <span v-if="dot.kind === 'won'" class="cell-star">★</span>
                 <i
                   v-else
                   class="cell-dot"
-                  :class="{ 'is-cb': e.item.kind === 'cb' }"
-                  :style="{ background: dotColor(e) }"
+                  :class="{ 'is-cb': dot.hasCb }"
+                  :style="{ background: KIND_META[dot.kind]?.color || '#94a3b8' }"
                 />
               </template>
             </div>
@@ -440,7 +451,7 @@ onMounted(async () => {
         <span v-for="k in LEGEND_KINDS" :key="k" class="lg">
           <i :style="{ background: KIND_META[k].color }" />{{ KIND_META[k].label }}
         </span>
-        <span class="lg"><i class="lg-sq" :style="{ background: CB_COLOR }" />可转债（方点）</span>
+        <span class="lg"><i class="lg-sq" :style="{ background: CB_COLOR }" />那天这批里有可转债（方点）</span>
         <span class="lg"><i style="background: #16a34a" />★ 已中签</span>
       </div>
 

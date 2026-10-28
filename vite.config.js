@@ -6,13 +6,35 @@ import { readFileSync } from 'node:fs'
 // 版本号单一来源：package.json 的 version，构建时注入为 __APP_VERSION__ 供界面显示
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf-8'))
 
+// 构建时刻（dev 下就是 dev server 启动的时刻）。
+// 版本号是编译期常量，dev 时不会随 HMR 更新 —— 改了 package.json 后界面还显示旧版本，
+// 很容易误以为代码没生效。带上这个时间就能一眼看出「跑的是哪一次启动/构建」。
+const now = new Date()
+const pad2 = (n) => String(n).padStart(2, '0')
+const buildTime = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())} ${pad2(now.getHours())}:${pad2(now.getMinutes())}`
+
 export default defineConfig({
   // 相对路径构建：同一份产物既能部署在域名根目录（CloudBase），也能部署在子目录（GitHub Pages）
   base: './',
   define: {
-    __APP_VERSION__: JSON.stringify(pkg.version)
+    __APP_VERSION__: JSON.stringify(pkg.version),
+    __BUILD_TIME__: JSON.stringify(buildTime)
   },
   plugins: [
+    // 版本与构建时刻：走虚拟模块而不是 define。
+    // define 在 build 下能把 __APP_VERSION__ 替换掉，但 dev 下不作用于 .vue 的 script ——
+    // 那里写裸标识符会直接 ReferenceError 白屏。虚拟模块在 dev/build 下都会真正执行 load()，
+    // dev 下取到的是 server 启动时刻，正好用来判断「重启生效没有」
+    {
+      name: 'build-info',
+      resolveId(id) {
+        if (id === 'virtual:build-info') return '\0virtual:build-info'
+      },
+      load(id) {
+        if (id !== '\0virtual:build-info') return null
+        return `export const APP_VERSION = ${JSON.stringify(pkg.version)}\nexport const BUILD_TIME = ${JSON.stringify(buildTime)}\n`
+      }
+    },
     vue(),
     VitePWA({
       registerType: 'autoUpdate',
