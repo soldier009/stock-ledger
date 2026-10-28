@@ -4,6 +4,7 @@ const routes = [
   { path: '/', name: 'overview', component: () => import('../views/Overview.vue') },
   { path: '/assets', name: 'assets', component: () => import('../views/Assets.vue') },
   { path: '/analysis', name: 'analysis', component: () => import('../views/Analysis.vue') },
+  { path: '/ipo', name: 'ipo-calendar', component: () => import('../views/IpoCalendar.vue') },
   { path: '/trades', name: 'trades', component: () => import('../views/Trades.vue') },
   { path: '/cash', name: 'cash-accounts', component: () => import('../views/CashAccounts.vue') },
   { path: '/add-asset', name: 'add-asset', component: () => import('../views/AddAsset.vue') },

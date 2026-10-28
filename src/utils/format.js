@@ -73,7 +73,8 @@ export function typeLabel(t) {
     sell: '卖出',
     div: '分红',
     gift: '送股',
-    rights: '配股'
+    rights: '配股',
+    win: '中签'
   }
   return map[t] || t
 }

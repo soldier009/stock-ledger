@@ -1,9 +1,10 @@
 <script setup>
-import { ref, computed, reactive, nextTick, watch } from 'vue'
+import { ref, computed, reactive, nextTick, watch, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import dayjs from 'dayjs'
 import { usePortfolioStore } from '../stores/portfolio'
+import { useIpoStore } from '../stores/ipo'
 import { useSettingsStore } from '../stores/settings'
 import { computeAll } from '../services/calc'
 import { fmtMoney, fmtNum, fmtShares, fmtPct, pnlClass, marketLabel, parseTags, typeLabel, rateOf, assetClass, assetClassLabel, ASSET_CLASSES } from '../utils/format'
@@ -13,7 +14,47 @@ import TradeForm from '../components/TradeForm.vue'
 const route = useRoute()
 const router = useRouter()
 const portfolio = usePortfolioStore()
+const ipoStore = useIpoStore()
 const settings = useSettingsStore()
+
+/**
+ * 这只是不是打新日历里的新股 / 可转债。
+ * 是的话详情页改成展示发行信息、不再提供买卖 —— 买入已经在打新记账里体现过了，
+ * 留着「快捷交易」只会让人把申购重复记成普通买入。
+ */
+const ipoEntry = computed(
+  () => (ipoStore.all || []).find((x) => x.market === market && x.code === code) || null
+)
+/** 有值的发行信息才展示：数据源字段不全时不要留一排「—」 */
+const ipoRows = computed(() => {
+  const it = ipoEntry.value
+  if (!it) return []
+  const rows = []
+  if (it.subscribeStart) rows.push({ label: '申购日', value: it.subscribeStart })
+  if (it.resultDate) rows.push({ label: '中签公布', value: it.resultDate })
+  if (it.listingDate) rows.push({ label: '上市日', value: it.listingDate })
+  if (it.darkPoolDate) rows.push({ label: '暗盘', value: it.darkPoolDate })
+  if (it.issuePriceRaw) rows.push({ label: '发行价', value: it.issuePriceRaw })
+  if (it.issueAmount) rows.push({ label: '发行规模', value: `${it.issueAmount} 亿元` })
+  if (it.onlineIssue) rows.push({ label: '网上发行', value: `${it.onlineIssue} 亿元` })
+  if (it.winRate) rows.push({ label: '网上中签率', value: `${it.winRate}%` })
+  if (it.subscribeLimit) rows.push({ label: '申购上限', value: it.subscribeLimit })
+  if (it.issuePe) rows.push({ label: '发行市盈率', value: it.issuePe })
+  if (it.sponsor) rows.push({ label: '保荐人', value: it.sponsor })
+  if (it.cornerstone) rows.push({ label: '基石投资者', value: it.cornerstone })
+  if (it.kind === 'cb') {
+    if (it.underlyingName)
+      rows.push({ label: '正股', value: `${it.underlyingName} ${it.underlyingCode || ''}`.trim() })
+    if (it.bondRating) rows.push({ label: '债券评级', value: it.bondRating })
+    if (it.convertPrice) rows.push({ label: '转股价', value: it.convertPrice })
+    if (it.premiumRate) rows.push({ label: '溢价率', value: it.premiumRate })
+  }
+  return rows
+})
+// 打新数据只在日历页加载过，这里直接进详情页时需要自己补一次
+onMounted(() => {
+  if (!ipoStore.all.length) ipoStore.load()
+})
 
 const market = String(route.params.market || '')
 const code = String(route.params.code || '')
@@ -244,7 +285,9 @@ async function submitQuick() {
 }
 
 // 交易记录分区：日常买卖 vs 分红/送股/配股（后者单独一个区块 + 专用添加按钮）
-const tradeRows = computed(() => stockTrades.value.filter((t) => t.type === 'buy' || t.type === 'sell'))
+const tradeRows = computed(() =>
+  stockTrades.value.filter((t) => t.type === 'buy' || t.type === 'sell' || t.type === 'win')
+)
 const incomeRows = computed(() =>
   stockTrades.value.filter((t) => t.type === 'div' || t.type === 'gift' || t.type === 'rights')
 )
@@ -256,7 +299,7 @@ function tradeAmount(t) {
 }
 
 function typeClass(t) {
-  return { buy: 'tag-buy', sell: 'tag-sell', div: 'tag-div', gift: 'tag-gift', rights: 'tag-rights' }[t.type] || ''
+  return { buy: 'tag-buy', sell: 'tag-sell', div: 'tag-div', gift: 'tag-gift', rights: 'tag-rights', win: 'tag-win' }[t.type] || ''
 }
 
 // 选择下拉中新建的标签时，立即并入标签组
@@ -339,8 +382,33 @@ function syncPurposes(v) {
       </div>
     </div>
 
+    <!-- 新股 / 可转债：展示发行信息，不做买卖 —— 中签要在打新日历里记 -->
+    <div v-if="ipoEntry" class="card">
+      <div class="row between">
+        <span class="section-title" style="margin: 0">
+          {{ ipoEntry.kind === 'cb' ? '可转债信息' : '新股信息' }}
+        </span>
+        <span class="ipo-badge">{{ ipoEntry.kind === 'cb' ? '可转债' : '新股' }}</span>
+      </div>
+
+      <div v-if="ipoRows.length" class="ipo-grid">
+        <div v-for="r in ipoRows" :key="r.label" class="ipo-grid-cell">
+          <span class="muted">{{ r.label }}</span>
+          <b>{{ r.value }}</b>
+        </div>
+      </div>
+      <div v-else class="muted" style="font-size: 11px">
+        这条只在打新日历里有登记，没有更多发行信息。
+      </div>
+
+      <div class="ipo-entry-tip muted">
+        中签请到<b>打新日历</b>里点「<b>记中签</b>」——那里会把代码与发行价带上，
+        还能选券商账户、以及是否从该账户扣款。
+      </div>
+    </div>
+
     <!-- 快捷交易：详情页内直接买卖 -->
-    <div class="card quick-card">
+    <div v-else class="card quick-card">
       <div class="row between" @click="quickOpen = !quickOpen">
         <span class="section-title" style="margin: 0">快捷交易</span>
         <el-icon :class="{ flip: !quickOpen }"><ArrowDown /></el-icon>
@@ -544,7 +612,10 @@ function syncPurposes(v) {
       <div v-else class="empty-tip">
         <div class="icon">📄</div>
         <div>暂无买卖记录</div>
-        <div class="muted">买入 / 卖出请用上方「快捷交易」</div>
+        <div class="muted">
+          <template v-if="ipoEntry">中签请在「打新日历」里点「记中签」</template>
+          <template v-else>买入 / 卖出请用上方「快捷交易」</template>
+        </div>
       </div>
     </div>
   </div>
@@ -736,6 +807,10 @@ function syncPurposes(v) {
   background: #e8f0fe;
   color: #1d4ed8;
 }
+.tag-win {
+  background: #dcfce7;
+  color: #15803d;
+}
 .t-detail {
   margin-top: 8px;
   font-size: 13px;
@@ -750,5 +825,36 @@ function syncPurposes(v) {
 }
 .act:active {
   color: var(--primary);
+}
+/* 打新标的详情页：发行信息网格 */
+.ipo-badge {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 11px;
+}
+.ipo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 8px 10px;
+  margin-top: 10px;
+}
+.ipo-grid-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+.ipo-grid-cell .muted {
+  font-size: 11px;
+}
+.ipo-entry-tip {
+  margin-top: 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #f8fafc;
+  font-size: 11px;
+  line-height: 1.7;
 }
 </style>

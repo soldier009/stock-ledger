@@ -45,6 +45,9 @@ CREATE TABLE IF NOT EXISTS trades (
   note TEXT DEFAULT '',
   broker TEXT DEFAULT '',
   origin TEXT DEFAULT '',
+  -- no_cash=1：这笔钱不是从该券商账户出的 —— 记持仓成本，但不扣这个账户的现金。
+  -- 主要为中签设计（钱可能从别处冻结），也能用于任何不打算体现在资金账上的买入
+  no_cash INTEGER DEFAULT 0,
   created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 CREATE TABLE IF NOT EXISTS stocks (
@@ -83,6 +86,8 @@ function migrate() {
   try { run('ALTER TABLE cash_flows ADD COLUMN broker TEXT DEFAULT ""') } catch {}
   // 初始建仓标记列（老库无此列时补列）
   try { run('ALTER TABLE trades ADD COLUMN origin TEXT DEFAULT ""') } catch {}
+  // 中签「不从券商扣款」标记（老库无此列时为 0 = 照常扣款）
+  try { run('ALTER TABLE trades ADD COLUMN no_cash INTEGER DEFAULT 0') } catch {}
   try { run('ALTER TABLE cash_flows ADD COLUMN origin TEXT DEFAULT ""') } catch {}
   // ref_id 指向 trades.id：「新建仓」自动生成的入金记录，用这一列精确定位它对应的买入记录，
   // 使两边联动（改金额 / 改日期 / 删除）不再依赖「金额 + 日期」猜测
@@ -176,7 +181,7 @@ function migrate() {
     // 取前后 7 天窗口内的初始建仓买入，覆盖买入改期而入金未联动的情况
     const buys = all(
       "SELECT id, date, code, name, shares, price, fee, tax FROM trades " +
-        "WHERE type IN ('buy', 'rights') AND origin = 'initial' AND broker = ? " +
+        "WHERE type IN ('buy', 'rights', 'win') AND origin = 'initial' AND broker = ? " +
         "AND date BETWEEN date(?, '-7 days') AND date(?, '+7 days') ORDER BY date, id",
       [c.broker, c.date, c.date]
     ).filter((t) => !linked.has(t.id))

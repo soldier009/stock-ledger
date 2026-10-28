@@ -69,7 +69,9 @@ const latest = computed(() => portfolio.lastNetPoint)
 
 // 净资产曲线口径说明：用于确认“补录历史持仓（初始建仓）并入起点”是否生效
 const initialInfo = computed(() => {
-  const buys = portfolio.trades.filter((t) => t.origin === 'initial' && (t.type === 'buy' || t.type === 'rights'))
+  const buys = portfolio.trades.filter(
+    (t) => t.origin === 'initial' && (t.type === 'buy' || t.type === 'rights' || t.type === 'win')
+  )
   const deps = portfolio.cashFlows.filter((c) => c.origin === 'initial' && c.type === 'deposit')
   const depSum = deps.reduce((a, c) => a + (Number(c.amount) || 0), 0)
   const series = portfolio.netValue

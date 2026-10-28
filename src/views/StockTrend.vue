@@ -7,6 +7,7 @@ import { usePortfolioStore } from '../stores/portfolio'
 import { fmtMoney, fmtNum, fmtShares, fmtPct, pnlClass, marketLabel, rateOf } from '../utils/format'
 import { buildPnlRows } from '../utils/pnl'
 import { useEcharts } from '../utils/echarts'
+import { IPO_WIN_COLOR } from '../constants'
 
 const route = useRoute()
 const router = useRouter()
@@ -74,7 +75,8 @@ const MARKS = {
   sell: { color: '#16a34a', label: '卖' },
   div: { color: '#f59e0b', label: '息' },
   rights: { color: '#0ea5e9', label: '配' },
-  gift: { color: '#64748b', label: '送' }
+  gift: { color: '#64748b', label: '送' },
+  win: { color: IPO_WIN_COLOR, label: '签' }
 }
 const markData = computed(() => {
   const pts = points.value

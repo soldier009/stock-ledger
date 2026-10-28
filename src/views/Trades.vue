@@ -20,7 +20,7 @@ const showCash = ref(true)
 
 // ===== 查找与筛选（参考主流记账 App：pill 下拉 + 底部弹层选项）=====
 // 类型 / 时间 / 券商三个维度叠加生效；关键词通过右上角放大镜展开
-const filter = ref('all') // all | bs | div | gift_rights
+const filter = ref('all') // all | bs | div | gift_rights | win
 const keyword = ref('')
 const searchOpen = ref(false)
 const dateRange = ref('all') // all | 7d | 30d | 1y | custom
@@ -32,7 +32,8 @@ const typeOptions = [
   { label: '全部类型', value: 'all' },
   { label: '买入与卖出', value: 'bs' },
   { label: '分红', value: 'div' },
-  { label: '送配', value: 'gift_rights' }
+  { label: '送配', value: 'gift_rights' },
+  { label: '中签', value: 'win' }
 ]
 const timeOptions = [
   { label: '全部时间', value: 'all' },
@@ -97,6 +98,7 @@ function tradeHit(t) {
   if (filter.value === 'bs' && t.type !== 'buy' && t.type !== 'sell') return false
   if (filter.value === 'div' && t.type !== 'div') return false
   if (filter.value === 'gift_rights' && t.type !== 'gift' && t.type !== 'rights') return false
+  if (filter.value === 'win' && t.type !== 'win') return false
   if (brokerFilter.value && (t.broker || '') !== brokerFilter.value) return false
   if (!matchTrade(keyword.value, t)) return false
   return inRange(t.date, scope.value.start, scope.value.end)
@@ -182,7 +184,7 @@ function tradeAmount(t) {
 }
 
 function typeClass(t) {
-  return { buy: 'tag-buy', sell: 'tag-sell', div: 'tag-div', gift: 'tag-gift', rights: 'tag-rights' }[t.type] || ''
+  return { buy: 'tag-buy', sell: 'tag-sell', div: 'tag-div', gift: 'tag-gift', rights: 'tag-rights', win: 'tag-win' }[t.type] || ''
 }
 
 function openEdit(t) {
@@ -569,6 +571,11 @@ async function delCash(c) {
 .tag-rights {
   background: #e8f0fe;
   color: #1d4ed8;
+}
+/* 中签：绿色，和日历上的星星呼应 */
+.tag-win {
+  background: #dcfce7;
+  color: #15803d;
 }
 .t-name {
   font-weight: 600;

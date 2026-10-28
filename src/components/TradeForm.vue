@@ -43,6 +43,13 @@ const form = reactive({
   purpose: '',
   broker: ''
 })
+/**
+ * 这笔买入的钱是否真的从券商现金账户扣。
+ * 关掉后：持仓与成本照记，但那个券商的现金不动 —— 净资产会偏高，
+ * 适合「钱不从记录账户出」的情况（典型：中签冻结资金或从别处付款）。
+ */
+const chargeCash = ref(true)
+const isBuyLikeType = computed(() => form.type === 'buy' || form.type === 'rights' || form.type === 'win')
 
 watch(visible, (v) => {
   if (!v) return
@@ -69,8 +76,12 @@ watch(visible, (v) => {
       purpose: st ? st.purpose || '' : '',
       broker: t.broker || (st && st.broker) || defaultBroker()
     })
+    chargeCash.value = !t.no_cash
   } else {
     title.value = '记一笔'
+    // 新增一定回到「扣款」。不重置的话，编辑过一笔 no_cash=1 的记录之后再记新交易，
+    // 开关会残留在「不扣款」上，让人不知不觉记出错账
+    chargeCash.value = true
     if (props.preset) {
       Object.assign(form, {
         type: 'div',
@@ -139,7 +150,9 @@ const typeOptions = [
   { label: '卖出', value: 'sell' },
   { label: '分红', value: 'div' },
   { label: '送股', value: 'gift' },
-  { label: '配股', value: 'rights' }
+  { label: '配股', value: 'rights' },
+  // 中签：与买入同口径（按发行价扣款、计成本），但单独留一个类型以便区分打新收益
+  { label: '中签', value: 'win' }
 ]
 
 // 新增时只提供分红 / 送股 / 配股：买入 / 卖出已改到股票详情页的「快捷交易」，
@@ -211,7 +224,13 @@ async function lookup(silent = false) {
     const q = await lookupQuote(form.market, code)
     if (q) {
       if (!form.name) form.name = q.name
-      if (form.type !== 'div' && form.type !== 'gift' && (!form.price || Number(form.price) === 0)) {
+      // 中签的「价格」是发行价（可转债为面值 100），不能用当前市价自动填
+      if (
+        form.type !== 'div' &&
+        form.type !== 'gift' &&
+        form.type !== 'win' &&
+        (!form.price || Number(form.price) === 0)
+      ) {
         form.price = q.price
       }
     } else if (!st && !silent) {
@@ -252,7 +271,8 @@ async function submit() {
     if (!form.shares || Number(form.shares) <= 0) return ElMessage.warning('请输入送股数量')
   } else {
     if (!form.shares || Number(form.shares) <= 0) return ElMessage.warning('请输入数量')
-    if (!form.price || Number(form.price) <= 0) return ElMessage.warning('请输入价格')
+    if (!form.price || Number(form.price) <= 0)
+      return ElMessage.warning(t === 'win' ? '请输入发行价（可转债填面值 100）' : '请输入价格')
   }
   submitting.value = true
   try {
@@ -268,6 +288,7 @@ async function submit() {
       tax: Number(form.tax) || 0,
       amount: t === 'div' ? Number(form.amount) || 0 : 0,
       note: form.note.trim(),
+      no_cash: chargeCash.value ? 0 : 1,
       tag: Array.isArray(form.tag) ? [...form.tag] : [],
       purpose: form.purpose || '',
       broker: form.broker || defaultBroker()
@@ -292,6 +313,7 @@ async function submit() {
 
 function reset() {
   lookupError.value = ''
+  chargeCash.value = true
   Object.assign(form, {
     type: 'div',
     market: 'A',
@@ -422,6 +444,13 @@ function reset() {
         </el-form-item>
       </template>
 
+      <template v-if="form.type === 'win'">
+        <div class="muted" style="margin: 6px 0; font-size: 11px; line-height: 1.6">
+          中签按<b>发行价</b>扣款并计入持仓成本 —— 它要冻结资金，不要用「送股」记（那会让现金虚高）。<br />
+          可转债：价格填面值 <b>100</b>，数量填中签<b>张数</b>。
+        </div>
+      </template>
+
       <template v-if="form.type === 'div'">
         <el-form-item label="分红金额（元）">
           <el-input-number v-model="form.amount" :min="0" :precision="2" :controls="false" style="width: 100%" />
@@ -441,6 +470,17 @@ function reset() {
           {{ form.type === 'sell' ? '实收金额' : '总成本' }}：<b>¥{{ fmtNum(computedAmount, 2) }}</b>
           <span class="muted">（A股卖出印花税默认 0.05%，可手动修改）</span>
         </div>
+        <el-form-item v-if="isBuyLikeType" label="从券商扣款">
+          <el-switch v-model="chargeCash" />
+          <span class="muted" style="margin-left: 8px; font-size: 11px; line-height: 1.5">
+            <template v-if="chargeCash">
+              应付金额将从「{{ form.broker }}」扣除
+            </template>
+            <template v-else>
+              券商现金<b>不变</b>：成本照记，但净资产会偏高 —— 用于钱不是从这个账户出的情况
+            </template>
+          </span>
+        </el-form-item>
       </template>
 
       <el-form-item label="备注">

@@ -16,6 +16,9 @@ export default defineConfig({
     vue(),
     VitePWA({
       registerType: 'autoUpdate',
+      // 开发时不要注册 Service Worker：它会把旧资源缓存下来，改完代码刷新仍是白屏/旧界面，
+      // 且 sw.js 在 dev 下拿到的是上次构建的清单，容易与当前 dev 资源对不上
+      devOptions: { enabled: false },
       includeAssets: ['favicon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png', 'icons/apple-touch-icon.png'],
       manifest: {
         name: '股票记账本',

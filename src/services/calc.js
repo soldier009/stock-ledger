@@ -14,6 +14,14 @@ export const NO_TAG = '未分类'
 const n = (v) => Number(v) || 0
 
 /**
+ * 买入类交易：普通买入 / 配股 / **中签**。
+ * 三者本质一样 —— 都是「按某个价格付钱拿到股份」，所以统一走「扣现金 + 计入持仓成本」这条路径。
+ * 中签尤其不能按「送股」处理：它虽然自动到账，但申购时冻结的资金是真的被扣了，
+ * 记为不扣钱的送股会让现金虚高、持仓成本归零，收益率跟着失真。
+ */
+const isBuyType = (t) => t === 'buy' || t === 'rights' || t === 'win'
+
+/**
  * 核心计算引擎：按时间顺序重放交易记录
  * 成本核算方式：移动加权平均
  * 现金按券商分账：每笔交易/资金流水归属于其所在券商账户
@@ -52,13 +60,15 @@ export function computeAll(trades, cashFlows, defaultBroker = DEFAULT_BROKER) {
     const type = t.type
 
     const price = n(t.price)
-    if (type === 'buy' || type === 'rights') {
+    if (isBuyType(type)) {
       const p = ensurePos(t)
       const cost = price * n(t.shares) + fee + tax
       p.basis += cost
       p.shares += n(t.shares)
       p.avgCost = p.shares > 0 ? p.basis / p.shares : 0
-      addCash(t.broker, -cost)
+      // no_cash：钱不是从这个券商的账户出的（用别的账户付 / 暂时只记录持仓）。
+      // 成本照常计入，但不动那个账户的现金 —— 净资产会因此偏高，界面上必须标出来
+      if (!t.no_cash) addCash(t.broker, -cost)
     } else if (type === 'sell') {
       const p = posMap.get(keyOf(t))
       const want = n(t.shares)
@@ -260,7 +270,7 @@ export function buildClosedRounds(trades) {
 
   for (const t of sorted) {
     const type = t.type
-    if (type === 'buy' || type === 'rights' || type === 'gift') {
+    if (isBuyType(type) || type === 'gift') {
       const s = stateOf(t)
       const r = s.open || newRound(s, t)
       if (t.name && !r.name) r.name = t.name
@@ -389,7 +399,7 @@ function buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, 
   let startDate = currentDate
   for (const t of rawTrades) if (t.date < startDate) startDate = t.date
   for (const c of rawCash) if (c.date < startDate) startDate = c.date
-  const isInitialBuy = (t) => !!(t.origin === 'initial' && (t.type === 'buy' || t.type === 'rights'))
+  const isInitialBuy = (t) => !!(t.origin === 'initial' && isBuyType(t.type))
   const wsTrades = rawTrades.map((t) =>
     isInitialBuy(t) && t.date > startDate ? { ...t, date: startDate } : t
   )
@@ -455,7 +465,7 @@ function buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, 
     for (const [d] of bars) {
       while (ptr < tlist.length && tlist[ptr].date <= d) {
         const t = tlist[ptr]
-        if (t.type === 'buy' || t.type === 'rights' || t.type === 'gift') shares += Number(t.shares) || 0
+        if (isBuyType(t.type) || t.type === 'gift') shares += Number(t.shares) || 0
         else if (t.type === 'sell') shares = Math.max(0, shares - (Number(t.shares) || 0))
         ptr++
       }
@@ -494,13 +504,13 @@ function buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, 
     const tax = Number(t.tax) || 0
     const type = t.type
     const price = n(t.price)
-    if (type === 'buy' || type === 'rights') {
+    if (isBuyType(type)) {
       const p = ensurePos(t.market, t.code)
       const cost = price * n(t.shares) + fee + tax
       p.basis += cost
       p.shares += n(t.shares)
       p.avgCost = p.shares > 0 ? p.basis / p.shares : 0
-      cash -= cost
+      if (!t.no_cash) cash -= cost
     } else if (type === 'sell') {
       const p = posMap.get(`${t.market}:${t.code}`)
       const want = n(t.shares)
@@ -734,7 +744,7 @@ export function dailyHoldingPnl(trades, klines, rates) {
   }
 
   const applyTrade = (t, shares) => {
-    if (t.type === 'buy' || t.type === 'rights' || t.type === 'gift') return shares + (Number(t.shares) || 0)
+    if (isBuyType(t.type) || t.type === 'gift') return shares + (Number(t.shares) || 0)
     if (t.type === 'sell') return Math.max(0, shares - (Number(t.shares) || 0))
     return shares
   }
@@ -794,7 +804,7 @@ export function holdingDayDetail(trades, klines, rates, date) {
     list.sort((a, b) => (a.date === b.date ? (a.id || 0) - (b.id || 0) : a.date.localeCompare(b.date)))
   }
   const applyTrade = (t, shares) => {
-    if (t.type === 'buy' || t.type === 'rights' || t.type === 'gift') return shares + (Number(t.shares) || 0)
+    if (isBuyType(t.type) || t.type === 'gift') return shares + (Number(t.shares) || 0)
     if (t.type === 'sell') return Math.max(0, shares - (Number(t.shares) || 0))
     return shares
   }

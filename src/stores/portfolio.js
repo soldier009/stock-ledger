@@ -511,7 +511,8 @@ export const usePortfolioStore = defineStore('portfolio', {
         const r = map.get(key)
         if (r) {
           if (t.date < r.first) r.first = t.date
-          if (t.origin === 'initial' && (t.type === 'buy' || t.type === 'rights')) r.initial = true
+          if (t.origin === 'initial' && (t.type === 'buy' || t.type === 'rights' || t.type === 'win'))
+            r.initial = true
           if (!r.name && t.name) r.name = t.name
         } else {
           map.set(key, {
@@ -519,7 +520,7 @@ export const usePortfolioStore = defineStore('portfolio', {
             code: t.code,
             name: t.name || t.code,
             first: t.date,
-            initial: !!(t.origin === 'initial' && (t.type === 'buy' || t.type === 'rights'))
+            initial: !!(t.origin === 'initial' && (t.type === 'buy' || t.type === 'rights' || t.type === 'win'))
           })
         }
       }
@@ -727,8 +728,8 @@ export const usePortfolioStore = defineStore('portfolio', {
     async addTrade(t) {
       const broker = t.broker || this.defaultBroker
       run(
-        'INSERT INTO trades (date, market, code, name, type, shares, price, fee, tax, amount, note, broker) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-        [t.date, t.market, t.code, t.name || '', t.type, t.shares || 0, t.price || 0, t.fee || 0, t.tax || 0, t.amount || 0, t.note || '', broker]
+        'INSERT INTO trades (date, market, code, name, type, shares, price, fee, tax, amount, note, broker, no_cash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        [t.date, t.market, t.code, t.name || '', t.type, t.shares || 0, t.price || 0, t.fee || 0, t.tax || 0, t.amount || 0, t.note || '', broker, t.no_cash ? 1 : 0]
       )
       const exist = get('SELECT id FROM stocks WHERE market = ? AND code = ?', [t.market, t.code])
       if (exist) {
@@ -851,8 +852,8 @@ export const usePortfolioStore = defineStore('portfolio', {
       const keepInitial = !!(oldT && oldT.origin === 'initial')
       const type = keepInitial ? 'buy' : t.type
       run(
-        'UPDATE trades SET date=?, market=?, code=?, name=?, type=?, shares=?, price=?, fee=?, tax=?, amount=?, note=?, broker=?, origin=? WHERE id=?',
-        [t.date, t.market, t.code, t.name || '', type, t.shares || 0, t.price || 0, t.fee || 0, t.tax || 0, t.amount || 0, t.note || '', broker, keepInitial ? 'initial' : '', id]
+        'UPDATE trades SET date=?, market=?, code=?, name=?, type=?, shares=?, price=?, fee=?, tax=?, amount=?, note=?, broker=?, origin=?, no_cash=? WHERE id=?',
+        [t.date, t.market, t.code, t.name || '', type, t.shares || 0, t.price || 0, t.fee || 0, t.tax || 0, t.amount || 0, t.note || '', broker, keepInitial ? 'initial' : '', t.no_cash ? 1 : 0, id]
       )
       // 初始建仓对应的自动入金：与买入记录成对联动——
       // 日期 / 券商 / 金额 / 备注（含股票名称）全部跟随，避免“买入某日、入金另一日”或
@@ -890,7 +891,7 @@ export const usePortfolioStore = defineStore('portfolio', {
     async deleteTrade(id) {
       // 初始建仓的自动入金与买入成对生成：删除买入时联动删除对应入金，避免现金端残留虚增
       const del = get('SELECT * FROM trades WHERE id = ?', [id])
-      if (del && del.origin === 'initial' && (del.type === 'buy' || del.type === 'rights')) {
+      if (del && del.origin === 'initial' && (del.type === 'buy' || del.type === 'rights' || del.type === 'win')) {
         const cf = this._initialDeposit(del, true)
         if (cf) run('DELETE FROM cash_flows WHERE id = ?', [cf.id])
       }

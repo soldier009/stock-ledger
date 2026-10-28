@@ -42,6 +42,8 @@ async function readAgreed() {
 export const useSettingsStore = defineStore('settings', {
   state: () => ({
     github: { token: '', repo: '', path: 'backup/stock-ledger.db', autoBackup: true },
+    // iTick：新股日历的数据源（A/港/美三地 IPO）。留空则新股日历只用手动录入的数据
+    itick: { token: '' },
     rates: { usd: 7.2, hkd: 0.92, auto: true },
     stampTaxRate: 0.0005,
     refreshMinutes: 10,
@@ -79,7 +81,9 @@ export const useSettingsStore = defineStore('settings', {
       const purposes = getSetting('purposes', null)
       const lastBackupAt = getSetting('lastBackupAt')
       const lastSyncAt = getSetting('lastSyncAt')
+      const itick = getSetting('itick')
       if (github && !skipGithub) this.github = { ...this.github, ...github }
+      if (itick) this.itick = { ...this.itick, ...itick }
       if (rates) this.rates = { ...this.rates, ...rates }
       if (stampTaxRate != null) this.stampTaxRate = stampTaxRate
       if (refreshMinutes != null) this.refreshMinutes = refreshMinutes
@@ -109,6 +113,13 @@ export const useSettingsStore = defineStore('settings', {
       this.github.repo = String(this.github.repo || '').trim()
       this.github.path = String(this.github.path || '').trim()
       setSetting('github', this.github)
+      await persist()
+    },
+    async saveItick(patch = {}) {
+      this.itick = { ...this.itick, ...patch }
+      this.itick.token = String(this.itick.token || '').replace(/\s+/g, '')
+      setSetting('itick', this.itick)
+      markDirty()
       await persist()
     },
     async saveRates(patch = {}) {

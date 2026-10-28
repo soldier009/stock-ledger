@@ -517,7 +517,9 @@ onMounted(() => {
             <el-icon @click="hNextMonth"><ArrowRight /></el-icon>
           </div>
         </div>
-        <div class="row between" style="margin-bottom: 12px">
+        <!-- 只留本月变动：同一行再摆「本年变动」会让金额和百分比互相挤压；
+             年变动本来就在「年模式」里有，月模式下重复展示没有意义 -->
+        <div class="row" style="justify-content: flex-end; margin-bottom: 12px">
           <div>
             <span class="muted">本月变动</span>
             <span class="num h-num" style="margin-left: 6px" :class="pnlClass(hMonth.amount)">
@@ -525,15 +527,6 @@ onMounted(() => {
             </span>
             <span v-if="hMonth.pct !== null" class="num h-num" style="margin-left: 6px" :class="pnlClass(hMonth.pct)">
               {{ hMonth.pct > 0 ? '+' : '' }}{{ fmtPct(hMonth.pct) }}
-            </span>
-          </div>
-          <div>
-            <span class="muted">本年变动</span>
-            <span class="num h-num" style="margin-left: 6px" :class="pnlClass(hYear.amount)">
-              {{ hYear.amount > 0 ? '+' : '' }}{{ fmtNum(hYear.amount, 0) }}
-            </span>
-            <span v-if="hYear.pct !== null" class="num h-num" style="margin-left: 6px" :class="pnlClass(hYear.pct)">
-              {{ hYear.pct > 0 ? '+' : '' }}{{ fmtPct(hYear.pct) }}
             </span>
           </div>
         </div>

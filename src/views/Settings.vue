@@ -7,12 +7,14 @@ import { useSettingsStore } from '../stores/settings'
 import { exportBytes, listLocalSnapshots, getLocalSnapshotBytes, listCloudArchives } from '../db'
 import { exportExcel, exportPdf, buildReportData } from '../services/export'
 import { testConnection, downloadBackup, parseRepo } from '../services/github'
+import { testIpoConnection } from '../services/ipo'
 
 const portfolio = usePortfolioStore()
 const settings = useSettingsStore()
 
 const fileInput = ref(null)
 const testing = ref(false)
+const itickTesting = ref(false)
 const backingUp = ref(false)
 const restoring = ref(false)
 
@@ -67,6 +69,7 @@ const sheetVisible = ref(false)
 const SHEET_TITLES = {
   sync: '同步配置',
   snapshots: '同步自动留底',
+  itick: '新股数据源（iTick）',
   refresh: '行情刷新',
   rates: '汇率设置',
   brokers: '券商管理',
@@ -79,6 +82,23 @@ const sheetTitle = computed(() => SHEET_TITLES[sheet.value] || '')
 const sheetSize = computed(() =>
   ['sync', 'brokers', 'tags', 'purposes'].includes(sheet.value) ? 'min(640px, 84vh)' : 'min(640px, 62vh)'
 )
+
+/** 验证 iTick API key：只发一个请求，结果直接弹提示，不用开控制台 */
+async function testItick() {
+  if (!settings.itick.token) {
+    ElMessage.warning('请先填写 API key')
+    return
+  }
+  itickTesting.value = true
+  try {
+    const r = await testIpoConnection(settings.itick.token)
+    ElMessage.success(`连接成功：港股新股 ${r.count} 条${r.count ? '' : '（当前暂无）'}`)
+  } catch (e) {
+    ElMessage.error(e.message || '连接失败')
+  } finally {
+    itickTesting.value = false
+  }
+}
 
 function openSheet(name) {
   sheet.value = name
@@ -539,6 +559,12 @@ function commitRenamePurpose(oldTag) {
         <span class="row-value">{{ settings.purposes.length }} 个用途</span>
         <el-icon class="chev"><ArrowRight /></el-icon>
       </div>
+      <div class="srow" @click="openSheet('itick')">
+        <el-icon class="ico"><Calendar /></el-icon>
+        <span class="row-title">新股数据源</span>
+        <span class="row-value">{{ settings.itick.token ? '已配置' : '未配置（可手动录入）' }}</span>
+        <el-icon class="chev"><ArrowRight /></el-icon>
+      </div>
     </div>
 
     <!-- ===== 关于 ===== -->
@@ -571,6 +597,36 @@ function commitRenamePurpose(oldTag) {
           <span class="st-close" @click="sheetVisible = false"><el-icon><Close /></el-icon></span>
         </div>
         <div class="st-body">
+          <!-- 新股数据源：iTick API key -->
+          <template v-if="sheet === 'itick'">
+            <div class="st-note">
+              新股日历的数据来自 <b>iTick</b>，覆盖 A股 / 港股 / 美股，提供招股期、中签公布、上市日等节点。<br />
+              免费套餐限 <b>每分钟 5 次调用</b>：一次刷新按市场发 4 个请求，「即将上市」与「近期已上市」请分开点，
+              同分钟内连点会被限流（提示 429）。超出额度或接口变更时拉取会失败 —— 此时可在新股日历页点「添加」手动录入，功能不受影响。
+            </div>
+            <el-form label-position="top" size="default" class="st-form">
+              <el-form-item label="iTick API key">
+                <el-input
+                  v-model="settings.itick.token"
+                  type="password"
+                  show-password
+                  placeholder="留空则只用手动录入的数据"
+                  @change="settings.saveItick()"
+                />
+              </el-form-item>
+            </el-form>
+            <div class="st-btns">
+              <el-button :loading="itickTesting" @click="testItick">测试连接</el-button>
+            </div>
+
+            <div class="st-note">
+              获取方式：打开 <b>itick.org</b> 注册，在个人中心复制 API key。<br />
+              注意这个 key 与上面「同步配置」里的 GitHub 令牌<b>不是同一个东西</b>，别填串了 —— 填错会返回
+              <code>401 Invalid API key</code>。<br />
+              本应用是纯前端，key 保存在本机浏览器；它会与其它设置一起写入本地数据库，若开启了 GitHub 同步，请知悉这一点。
+            </div>
+          </template>
+
           <!-- 同步配置 -->
           <template v-if="sheet === 'sync'">
             <div class="st-note">

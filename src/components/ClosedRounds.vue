@@ -56,6 +56,7 @@ function typeLabel(t) {
   if (t.type === 'buy') return '买入'
   if (t.type === 'rights') return '配股'
   if (t.type === 'gift') return '送股'
+  if (t.type === 'win') return '中签'
   if (t.type === 'sell') return '卖出'
   if (t.type === 'div') return '分红'
   return t.type || '其他'
@@ -463,6 +464,7 @@ function onTouchEnd() {
 }
 .cr-d-type.t-buy,
 .cr-d-type.t-rights,
+.cr-d-type.t-win,
 .cr-d-type.t-gift {
   background: #fee2e2;
   color: #dc2626;

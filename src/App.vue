@@ -151,6 +151,10 @@ watch(
         <el-icon :size="22"><TrendCharts /></el-icon>
         <span>分析</span>
       </router-link>
+      <router-link to="/ipo" replace class="tab" :class="{ active: route.path === '/ipo' }">
+        <el-icon :size="22"><Calendar /></el-icon>
+        <span>新股</span>
+      </router-link>
       <router-link to="/settings" replace class="tab" :class="{ active: route.path === '/settings' }">
         <el-icon :size="22"><Setting /></el-icon>
         <span>设置</span>
