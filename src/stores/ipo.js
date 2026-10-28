@@ -1,5 +1,8 @@
 import { defineStore } from 'pinia'
-import { getKv, setKv } from '../db'
+// 新股数据存数据库的 settings 表（而不是 KV）：整库同步导出的是 sql.js 的字节，
+// KV 存在 IndexedDB 另一个 store 里、根本不在导出范围内 —— 那样换设备新股数据就丢了。
+// getKv 只为迁移老数据保留。
+import { getKv, getSetting, setSetting, markDirty, persist } from '../db'
 import {
   fetchItickIpos,
   fetchEmNewStocks,
@@ -162,7 +165,17 @@ export const useIpoStore = defineStore('ipo', {
 
   actions: {
     async load() {
-      const saved = await getKv(KEY)
+      let saved = getSetting(KEY, null)
+      // 老版本存在 IndexedDB 的 KV 里，搬进数据库一次，别让用户重新导入
+      if (!saved) {
+        const legacy = await getKv(KEY)
+        if (legacy && typeof legacy === 'object') {
+          saved = legacy
+          setSetting(KEY, toPlain(legacy))
+          markDirty()
+          await persist()
+        }
+      }
       if (saved && typeof saved === 'object') {
         this.manual = Array.isArray(saved.manual) ? saved.manual : []
         this.remote = Array.isArray(saved.remote) ? saved.remote : []
@@ -173,7 +186,7 @@ export const useIpoStore = defineStore('ipo', {
     },
 
     async save() {
-      await setKv(
+      setSetting(
         KEY,
         toPlain({
           manual: this.manual,
@@ -183,6 +196,10 @@ export const useIpoStore = defineStore('ipo', {
           lastFetchAt: this.lastFetchAt
         })
       )
+      // 标记「本地有改动」并落盘：自动备份是靠这个时间戳判断要不要推送的，
+      // 少了这两步，新股改了但整库没标记为脏，云端就收不到
+      markDirty()
+      await persist()
     },
 
     /**
