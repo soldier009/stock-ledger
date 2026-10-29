@@ -658,6 +658,64 @@ export function tradedDaysOf(klines) {
 }
 
 /**
+ * 单只标的「当日盈亏」的实时价口径 —— 按「昨收就持有」和「今日新成交」两段分别算。
+ *
+ * 不能笼统地用 (现价 − 昨收) × 现持股：今天买入的股票，买入之前今天已经涨（或跌）的
+ * 那一段不属于今天的盈亏 —— 它已经体现在成交价里了，你的成本是成交价而不是昨收。
+ *
+ *   例：昨收 0.480，今天以 0.474 买入 1200 股，现价 0.470
+ *       笼统算 (0.470 − 0.480) × 1200 = −12.0   ← 其中 7.2 是买入前跌的，跟你无关
+ *       分段算 (0.470 − 0.474) × 1200 = −4.8    ← 真实的今日盈亏
+ *
+ * 今天卖出的部分按 (成交价 − 昨收) 结算 —— 这段收益当天落袋，
+ * 卖出之后股价再涨跌就与它无关了。
+ *
+ * @param {number} price 现价（原币）
+ * @param {number|null} prevClose 昨收，没有则为 null/0
+ * @param {number} shares 当前持股
+ * @param {Array} todayTrades 该标的今日的交易记录
+ * @returns {{ amount: number, base: number }|null} amount 当日盈亏（原币），base 是算涨跌幅用的分母；算不出返回 null
+ */
+export function symbolDayPnl({ price, prevClose, shares, todayTrades }) {
+  const legs = Array.isArray(todayTrades) ? todayTrades : []
+  const hasPrev = Number(prevClose) > 0
+  let bought = 0
+  let sold = 0
+  let boughtLeg = 0
+  let soldLeg = 0
+  let boughtBase = 0
+  let soldBase = 0
+  for (const t of legs) {
+    const qty = Number(t.shares) || 0
+    const px = Number(t.price) || 0
+    if (qty <= 0) continue
+    if (t.type === 'sell') {
+      sold += qty
+      if (hasPrev) {
+        soldLeg += (px - prevClose) * qty
+        soldBase += prevClose * qty
+      }
+    } else if (isBuyType(t.type)) {
+      bought += qty
+      boughtLeg += (price - px) * qty // 按成交价起算，而不是昨收
+      boughtBase += px * qty
+    }
+    // gift（送股）没有成交价，不算买入；它在昨收时已持有，归入下面的持有段
+  }
+  // 没有昨收、今天也没买入 → 无从算起
+  if (!hasPrev && bought === 0) return null
+  // 昨日就持有、且今天没卖出的那部分
+  const stillHeld = Math.max(0, (Number(shares) || 0) - bought)
+  let amount = boughtLeg + soldLeg
+  let base = boughtBase + soldBase
+  if (hasPrev) {
+    amount += (price - prevClose) * stillHeld
+    base += prevClose * stillHeld
+  }
+  return { amount, base }
+}
+
+/**
  * 剔除资金进出后的净资产序列（时间加权口径 TWR），供回撤分析使用。
  *
  * 直接拿净资产算回撤会把存取款当成盈亏：

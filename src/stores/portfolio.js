@@ -28,7 +28,8 @@ import {
   holdingSeries,
   dailyRealized,
   dailyHoldingPnl,
-  drawdown
+  drawdown,
+  symbolDayPnl
 } from '../services/calc'
 import { fetchQuotes, fetchRates } from '../services/quotes'
 import { fetchDayKlines } from '../services/kline'
@@ -236,6 +237,17 @@ export const usePortfolioStore = defineStore('portfolio', {
       const stockMap = new Map()
       for (const s of this.stocks) stockMap.set(s.market + ':' + s.code, s)
 
+      // 今日成交按标的分组：「今日盈亏」要把昨收就持有的部分与今日新成交的部分分开算，
+      // 后者按成交价起算 —— 不能把买入之前今天已涨跌的那一段算进今日盈亏
+      const td = fmtDay(new Date())
+      const todayLegs = new Map()
+      for (const t of this.trades) {
+        if (t.date !== td) continue
+        const key = t.market + ':' + t.code
+        if (!todayLegs.has(key)) todayLegs.set(key, [])
+        todayLegs.get(key).push(t)
+      }
+
       let mvTotal = 0
       let floating = 0
       let dayPnl = 0
@@ -247,10 +259,16 @@ export const usePortfolioStore = defineStore('portfolio', {
         const mvCny = mv * rate
         const pnl = (price - p.avgCost) * p.shares
         const pnlCny = pnl * rate
-        const day = q && q.prevClose ? (price - q.prevClose) * p.shares : null
-        const dayCny = day === null ? null : day * rate
-        // 今日盈亏的涨跌幅分母：昨收市值（与 dayCny 同源，缺昨收时为 null）
-        const dayBaseCny = q && q.prevClose ? q.prevClose * p.shares * rate : null
+        const dp = symbolDayPnl({
+          price,
+          prevClose: q && q.prevClose,
+          shares: p.shares,
+          todayTrades: todayLegs.get(p.market + ':' + p.code)
+        })
+        const day = dp ? dp.amount : null
+        const dayCny = dp ? dp.amount * rate : null
+        // 今日盈亏的涨跌幅分母：与分子同源（昨收市值 + 今日买入成交额），缺昨收时为 null
+        const dayBaseCny = dp ? dp.base * rate : null
         const st = stockMap.get(p.market + ':' + p.code)
         mvTotal += mvCny
         floating += pnlCny
@@ -402,21 +420,20 @@ export const usePortfolioStore = defineStore('portfolio', {
       this.drawdownStats = drawdown(this.netValueExFlow)
       // 与上面的市值/资产序列用同一份汇率 r，避免自定义汇率时日历盈亏与曲线口径不一致
       let rows = dailyHoldingPnl(this.trades, this.klineCache.bySymbol, r)
-      // “今天”这一格单独用实时行情口径：Σ 每只当前持仓 (现价 − 昨收) × 现持股
-      // 与顶部「今日盈亏」指标同源，不区分当日是否买卖、不依赖今日日K是否已更新。
+      // “今天”这一格单独用实时行情口径：逐持仓按「昨日持有段 + 今日成交段」相加。
+      // 与顶部「今日盈亏」指标同源 —— 今日买入的部分按成交价起算，不依赖今日日K是否已更新。
       const td = fmtDay(new Date())
       let dayAmt = 0
       let dayBase = 0
       let dayReady = false
       let quoteToday = false
       for (const p of this.positions) {
-        const q = p.quote || null
-        const prev = q && q.prevClose
-        if (!prev || prev <= 0 || p.day === null || p.dayCny === null) continue
+        if (p.dayCny === null || p.dayBaseCny === null) continue
         dayReady = true
         dayAmt += p.dayCny
-        dayBase += prev * p.shares * p.rate
-        if (q.time && String(q.time).replace(/[-: ]/g, '').startsWith(td.replace(/-/g, ''))) quoteToday = true
+        dayBase += p.dayBaseCny
+        const q = p.quote || null
+        if (q && q.time && String(q.time).replace(/[-: ]/g, '').startsWith(td.replace(/-/g, ''))) quoteToday = true
       }
       // 只在“今天是交易日”（有当日行情或日K已含今日）时写入实时口径，避免周末/假期重复上一天盈亏
       const hasTodayBar = Object.values(this.klineCache.bySymbol || {}).some(

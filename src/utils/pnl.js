@@ -47,7 +47,8 @@ export function buildPnlRows(positions = [], realizedEvents = [], closedRounds =
         mv: 0,
         floating: 0,
         realized: 0,
-        // 今日盈亏（人民币）：只有当前持仓且有昨收才有值，hasToday 用来区分「无行情」与「今日 0」
+        // 今日盈亏（人民币）：今日买入的部分按成交价起算、昨收持有的部分按昨收起算。
+        // hasToday 用来区分「算不出来」与「今日确实为 0」
         today: 0,
         todayBase: 0,
         hasToday: false,
@@ -100,7 +101,7 @@ export function buildPnlRows(positions = [], realizedEvents = [], closedRounds =
     totalPnl: r.floating + r.realized,
     returnPct: r.cost > 0 ? (r.floating / r.cost) * 100 : null,
     realizedPct: r.cost > 0 ? (r.realized / r.cost) * 100 : null,
-    // 今日涨跌幅 = 今日盈亏 ÷ 昨收市值
+    // 今日涨跌幅 = 今日盈亏 ÷ 当日基数（昨收市值 + 今日买入成交额），口径与今日盈亏一致
     todayPct: r.hasToday && r.todayBase > 0 ? (r.today / r.todayBase) * 100 : null
   }))
   rows.sort((a, b) => b.cost - a.cost || b.totalPnl - a.totalPnl)
