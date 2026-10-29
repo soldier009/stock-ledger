@@ -616,6 +616,48 @@ export function netValueSeries(trades, cashFlows, currentPrices, rates, currentD
 }
 
 /**
+ * 净值曲线最后两点之间，是否漏掉了有行情的交易日。
+ *
+ * 「今日变化」取的是序列最后两点的差。只要中间跳过一个有行情的日子，
+ * 这个差值就是好几天的累计涨跌，却被当成单日变化显示 —— K 线没补齐时
+ * 会凭空多出几百块，让人以为今天亏了那么多。
+ *
+ * 只看日历不够：法定节假日数据源本来就没有 K 线，跳过它们不算缺口。
+ * 所以要求「中间至少有一个工作日在 K 线里找得到」，才认定是真缺口。
+ *
+ * @param {string} fromDate 序列倒数第二点的日期（基准）
+ * @param {string} toDate   序列最后一点的日期（通常是今天）
+ * @param {Set<string>} tradedDays K 线缓存里出现过的所有日期
+ * @returns {boolean} true = 中间确实漏了交易日
+ */
+export function missingTradeDayBetween(fromDate, toDate, tradedDays) {
+  if (!fromDate || !toDate || !tradedDays || !tradedDays.size) return false
+  const pad = (n) => String(n).padStart(2, '0')
+  const cur = new Date(fromDate + 'T00:00:00')
+  const end = new Date(toDate + 'T00:00:00')
+  cur.setDate(cur.getDate() + 1)
+  while (cur < end) {
+    const w = cur.getDay()
+    const ds = `${cur.getFullYear()}-${pad(cur.getMonth() + 1)}-${pad(cur.getDate())}`
+    if (w !== 0 && w !== 6 && tradedDays.has(ds)) return true
+    cur.setDate(cur.getDate() + 1)
+  }
+  return false
+}
+
+/** 收集 K 线缓存里出现过的所有交易日 */
+export function tradedDaysOf(klines) {
+  const out = new Set()
+  for (const meta of Object.values(klines || {})) {
+    const days = meta && meta.days
+    // K 线还没拉到时 meta 存在但没有 days，直接 for...of 会在 undefined 上炸
+    if (!Array.isArray(days)) continue
+    for (const bar of days) if (bar && bar[0]) out.add(bar[0])
+  }
+  return out
+}
+
+/**
  * 剔除资金进出后的净资产序列（时间加权口径 TWR），供回撤分析使用。
  *
  * 直接拿净资产算回撤会把存取款当成盈亏：

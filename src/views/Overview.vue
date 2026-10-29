@@ -5,7 +5,7 @@ import dayjs from 'dayjs'
 import { ArrowLeft, ArrowRight, View, Hide, Loading } from '@element-plus/icons-vue'
 import { usePortfolioStore } from '../stores/portfolio'
 import { fmtMoney, fmtNum, fmtShares, fmtPct, pnlClass, marketLabel, fmtTime, assetClass, assetClassLabel } from '../utils/format'
-import { holdingDayDetail } from '../services/calc'
+import { holdingDayDetail, missingTradeDayBetween, tradedDaysOf } from '../services/calc'
 import { groupBy, PALETTE, CASH_COLOR } from '../utils/composition'
 import NetWorthCurve from '../components/NetWorthCurve.vue'
 import ClosedRounds from '../components/ClosedRounds.vue'
@@ -21,11 +21,16 @@ const latest = computed(() => portfolio.lastNetPoint)
 
 const todayChange = computed(() => {
   const s = portfolio.netValue
-  if (s.length < 2) return { value: 0, pct: 0 }
+  if (s.length < 2) return { value: 0, pct: 0, valid: false }
   const last = s[s.length - 1]
   const prev = s[s.length - 2]
+  // 基准必须是上一个交易日。K 线没补齐时序列会跳掉一天，两点之差就成了跨天的累计数，
+  // 当「今日变化」显示会凭空多出好几百 —— 宁可显示「数据缺口」也不显示一个错数
+  if (missingTradeDayBetween(prev.date, last.date, tradedDaysOf(portfolio.klineCache.bySymbol))) {
+    return { value: 0, pct: 0, valid: false, baseDate: prev.date }
+  }
   const v = last.netValue - prev.netValue
-  return { value: v, pct: prev.netValue ? (v / prev.netValue) * 100 : 0 }
+  return { value: v, pct: prev.netValue ? (v / prev.netValue) * 100 : 0, valid: true }
 })
 
 const allocation = computed(() => {
@@ -337,8 +342,17 @@ onMounted(() => {
         <div style="text-align: right">
           <div class="muted" style="font-size: 12px">今日变化</div>
           <div class="num" :class="pnlClass(todayChange.value)">
-            {{ todayChange.value > 0 ? '+' : '' }}{{ fmtMoney(todayChange.value, 0) }}
-            ({{ todayChange.value > 0 ? '+' : '' }}{{ fmtPct(todayChange.pct) }})
+            <template v-if="todayChange.valid">
+              {{ todayChange.value > 0 ? '+' : '' }}{{ fmtMoney(todayChange.value, 0) }}
+              ({{ todayChange.value > 0 ? '+' : '' }}{{ fmtPct(todayChange.pct) }})
+            </template>
+            <span
+              v-else
+              class="muted"
+              style="font-size: 12px"
+              :title="`净值曲线缺 ${todayChange.baseDate} 之后的日线，两点之差是好几天的累计值，不按单日显示。点下方的「补全」补齐日线后自动恢复`"
+              >数据缺口</span
+            >
           </div>
         </div>
       </div>
