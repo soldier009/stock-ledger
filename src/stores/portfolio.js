@@ -96,6 +96,9 @@ export const usePortfolioStore = defineStore('portfolio', {
     // 已尽力仍拿不到的股票：数据源本身没有该标的，或只提供 X 之后的数据（如新股上市前）。
     // 这类重试也没用，不再计入缺失，只在界面上说明其盈亏未计入
     klinePartial: [],
+    // 历史已覆盖、但最近几个交易日没跟上的股票：它既不算 missing（历史是齐的），
+    // 又会让净值曲线少掉最近的点、「今日变化」变成跨天累计值，所以要单独列出来给个补救入口
+    klineStale: [],
     // 需要整段历史补全（首次/换设备，缓存里全无数据）时阻断日历显示，避免残缺数字上屏
     klineBlocking: false,
     // 本轮补全进度
@@ -568,6 +571,16 @@ export const usePortfolioStore = defineStore('portfolio', {
       const by = this.klineCache.bySymbol || {}
       const missing = []
       const partial = []
+      const stale = []
+      // 最近一个「理应已有收盘」的工作日。今天还在盘中时数据源多半没出当日 K，
+      // 所以退到上一个工作日再比，免得刚开盘就把所有股票都判成落后
+      const expect = (() => {
+        const x = new Date()
+        do {
+          x.setDate(x.getDate() - 1)
+        } while (x.getDay() === 0 || x.getDay() === 6)
+        return fmtDay(x)
+      })()
       for (const [key, r] of this._requiredSymbols()) {
         const meta = by[key]
         const days = (meta && meta.days) || []
@@ -576,20 +589,29 @@ export const usePortfolioStore = defineStore('portfolio', {
         // 数据源给得出的最早日期是否已覆盖首建仓日
         const since = days.length ? days[0][0] : null
         const covered = !!since && since <= r.first
-        if (covered) continue
-        const item = { key, market: r.market, code: r.code, name: r.name, since }
-        // 请求过但给不出那么早，且已试够次数 —— 认定数据源本身没有，不再算缺失
-        if (tried && (Number(meta.tries) || 0) >= KLINE_GIVEUP_TRIES) partial.push(item)
-        else missing.push(item)
+        if (!covered) {
+          const item = { key, market: r.market, code: r.code, name: r.name, since }
+          // 请求过但给不出那么早，且已试够次数 —— 认定数据源本身没有，不再算缺失
+          if (tried && (Number(meta.tries) || 0) >= KLINE_GIVEUP_TRIES) partial.push(item)
+          else missing.push(item)
+          continue
+        }
+        // 历史齐了但最近没跟上：日历会停在几天前，「今日变化」也会跨天累计。
+        // 它不属于 missing，单独归类好让界面给出「补全」入口
+        const lastBar = days.length ? days[days.length - 1][0] : ''
+        if (lastBar && lastBar < expect) {
+          stale.push({ key, market: r.market, code: r.code, name: r.name, last: lastBar })
+        }
       }
-      return { missing, partial }
+      return { missing, partial, stale }
     },
 
     // 一次同步结束后核算最终状态（不发起网络请求）
     _finishKlineSync() {
-      const { missing, partial } = this._klineStatus()
+      const { missing, partial, stale } = this._klineStatus()
       this.klineMissing = missing
       this.klinePartial = partial
+      this.klineStale = stale
       // 只有暂时拿不到的才算 missing；partial 属于数据源本身没有，不阻断日历
       this.klineState = missing.length ? 'missing' : 'ready'
       this.klineBlocking = false
@@ -603,7 +625,7 @@ export const usePortfolioStore = defineStore('portfolio', {
      *   不再每次打开都整段重拉（否则这类标的会永远拉不到、白白耗流量）；
      * - 仅当缓存里一只可用数据都没有时置 klineBlocking，让界面提示“补全中”而不是显示残缺数字。
      */
-    async syncKlines() {
+    async syncKlines(force = false) {
       if (this.klineSyncing || !this.trades.length) {
         if (!this.trades.length) {
           this.klineMissing = []
@@ -626,6 +648,17 @@ export const usePortfolioStore = defineStore('portfolio', {
         const tried = !!(meta && meta.ok === true && meta.from && meta.from <= r.first)
         // 数据源给得出的最早日期是否已覆盖首建仓日
         const covered = !!(days.length && days[0][0] <= r.first)
+        if (force) {
+          // 手动「补全」：绕开「每天只拉一次」的限制 —— 否则只要今天请求过就不再发，
+          // 点了按钮也不会有任何反应。没有整段缓存的拉整段，其余从最后一根往后增量
+          const lastBar = days.length ? days[days.length - 1][0] : ''
+          if (!tried) {
+            jobs.push({ key, market: r.market, code: r.code, from: r.first, full: true })
+          } else if (lastBar && lastBar < today) {
+            jobs.push({ key, market: r.market, code: r.code, from: dayAfter(lastBar), full: false })
+          }
+          continue
+        }
         if (!tried) {
           // 从没请求过整段：从最早建仓日拉到现在（含旧缓存缺 ok 标记的一次性修复）
           jobs.push({ key, market: r.market, code: r.code, from: r.first, full: true })
@@ -735,10 +768,11 @@ export const usePortfolioStore = defineStore('portfolio', {
       }
     },
 
-    // 手动“重试补全”（用于缺失提示里的按钮）：只补齐目前还缺的股票
+    // 手动“重试补全”（缺失 / 日线落后提示里的按钮）：传 force 绕开「每天只拉一次」，
+    // 否则今天已经请求过的情况下点了没有任何效果 —— 用户会觉得按钮失灵
     async retryKlines() {
       if (this.klineSyncing) return
-      return this.syncKlines()
+      return this.syncKlines(true)
     },
 
     // 记一笔：写入交易，并同步股票主数据（含标签、所属券商）

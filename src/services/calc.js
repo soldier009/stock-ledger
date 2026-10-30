@@ -616,22 +616,32 @@ export function netValueSeries(trades, cashFlows, currentPrices, rates, currentD
 }
 
 /**
- * 净值曲线最后两点之间，是否漏掉了有行情的交易日。
+ * 净值曲线最后两点之间，基准点是不是上一个交易日。
  *
- * 「今日变化」取的是序列最后两点的差。只要中间跳过一个有行情的日子，
- * 这个差值就是好几天的累计涨跌，却被当成单日变化显示 —— K 线没补齐时
- * 会凭空多出几百块，让人以为今天亏了那么多。
+ * 「今日变化」取序列最后两点的差。只要中间跳过一个有行情的日子，这个差值就是
+ * 好几天的累计涨跌，却被当成单日变化显示 —— K 线没补齐时会凭空多出几百块，
+ * 让人以为今天亏了那么多。
  *
- * 只看日历不够：法定节假日数据源本来就没有 K 线，跳过它们不算缺口。
- * 所以要求「中间至少有一个工作日在 K 线里找得到」，才认定是真缺口。
+ * 结果分三档，因为「K 线那天空着」和「那天有行情却被跳过」不是一回事：
+ *   ok   —— 中间没跳过交易日，两点之差就是单日变化
+ *   gap  —— 中间的工作日在 K 线里找得到，说明那天确实有行情却没进序列 → 确认缺口
+ *   soft —— 中间有工作日，但 K 线还没拉到那天，无从判断它是不是交易日。
+ *           既不能确认缺口，也不能断言没问题，交给调用方决定怎么呈现
+ *
+ * 只看日历区分不了节假日和缺口（节假日数据源本来就没 K 线），所以要看这一天
+ * 在缓存里的相对位置：是有、还是压根没拉到。
  *
  * @param {string} fromDate 序列倒数第二点的日期（基准）
  * @param {string} toDate   序列最后一点的日期（通常是今天）
  * @param {Set<string>} tradedDays K 线缓存里出现过的所有日期
- * @returns {boolean} true = 中间确实漏了交易日
+ * @returns {'ok'|'gap'|'soft'}
  */
-export function missingTradeDayBetween(fromDate, toDate, tradedDays) {
-  if (!fromDate || !toDate || !tradedDays || !tradedDays.size) return false
+export function classifyTradeDayGap(fromDate, toDate, tradedDays) {
+  if (!fromDate || !toDate) return 'ok'
+  // 一条 K 线都没有：连「那天是不是交易日」都没有依据
+  if (!tradedDays || !tradedDays.size) return 'soft'
+  let maxDay = ''
+  for (const d of tradedDays) if (d > maxDay) maxDay = d
   const pad = (n) => String(n).padStart(2, '0')
   const cur = new Date(fromDate + 'T00:00:00')
   const end = new Date(toDate + 'T00:00:00')
@@ -639,10 +649,16 @@ export function missingTradeDayBetween(fromDate, toDate, tradedDays) {
   while (cur < end) {
     const w = cur.getDay()
     const ds = `${cur.getFullYear()}-${pad(cur.getMonth() + 1)}-${pad(cur.getDate())}`
-    if (w !== 0 && w !== 6 && tradedDays.has(ds)) return true
+    if (w !== 0 && w !== 6) {
+      // 缓存里有这天、序列却跳过了它 → 确确实实漏了
+      if (tradedDays.has(ds)) return 'gap'
+      // 缓存最远只到某天，这天还在它之后 → 没拉到，判断不了
+      if (ds > maxDay) return 'soft'
+      // ds ≤ maxDay 却不在缓存里 → 那天本来就没行情（法定休市），跳过去不算缺口
+    }
     cur.setDate(cur.getDate() + 1)
   }
-  return false
+  return 'ok'
 }
 
 /** 收集 K 线缓存里出现过的所有交易日 */

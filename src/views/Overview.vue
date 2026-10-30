@@ -5,7 +5,7 @@ import dayjs from 'dayjs'
 import { ArrowLeft, ArrowRight, View, Hide, Loading } from '@element-plus/icons-vue'
 import { usePortfolioStore } from '../stores/portfolio'
 import { fmtMoney, fmtNum, fmtShares, fmtPct, pnlClass, marketLabel, fmtTime, assetClass, assetClassLabel } from '../utils/format'
-import { holdingDayDetail, missingTradeDayBetween, tradedDaysOf } from '../services/calc'
+import { holdingDayDetail, classifyTradeDayGap, tradedDaysOf } from '../services/calc'
 import { groupBy, PALETTE, CASH_COLOR } from '../utils/composition'
 import NetWorthCurve from '../components/NetWorthCurve.vue'
 import ClosedRounds from '../components/ClosedRounds.vue'
@@ -25,12 +25,19 @@ const todayChange = computed(() => {
   const last = s[s.length - 1]
   const prev = s[s.length - 2]
   // 基准必须是上一个交易日。K 线没补齐时序列会跳掉一天，两点之差就成了跨天的累计数，
-  // 当「今日变化」显示会凭空多出好几百 —— 宁可显示「数据缺口」也不显示一个错数
-  if (missingTradeDayBetween(prev.date, last.date, tradedDaysOf(portfolio.klineCache.bySymbol))) {
-    return { value: 0, pct: 0, valid: false, baseDate: prev.date }
-  }
+  // 当「今日变化」显示会凭空多出好几百 —— 宁可显示「数据缺口」也不显示一个错数。
+  // 只有能确认「那天有行情却被跳过」时才叫缺口；K 线压根没拉到那天属于 soft，
+  // 数字照常显示但标注「自 X 日起」，让人知道它不是严格意义上的单日变化
+  const kind = classifyTradeDayGap(prev.date, last.date, tradedDaysOf(portfolio.klineCache.bySymbol))
+  if (kind === 'gap') return { value: 0, pct: 0, valid: false, kind, baseDate: prev.date }
   const v = last.netValue - prev.netValue
-  return { value: v, pct: prev.netValue ? (v / prev.netValue) * 100 : 0, valid: true }
+  return {
+    value: v,
+    pct: prev.netValue ? (v / prev.netValue) * 100 : 0,
+    valid: true,
+    kind,
+    baseDate: prev.date
+  }
 })
 
 const allocation = computed(() => {
@@ -195,8 +202,8 @@ const kCal = computed(() => {
     return { kind: 'loading', total: p.klineTotal, done: p.klineFetched }
   }
   if (p.klineState === 'idle') return { kind: 'loading', total: 0, done: 0 }
-  // 可重试的缺失 + 数据源本身没有的（后者重试也没用）
-  return { kind: 'ok', missing: p.klineMissing, partial: p.klinePartial }
+  // 可重试的缺失 + 数据源本身没有的（后者重试也没用）+ 日线没跟上的（可手动补全）
+  return { kind: 'ok', missing: p.klineMissing, partial: p.klinePartial, stale: p.klineStale }
 })
 
 function hPrevMonth() { hDate.value = hDate.value.subtract(1, 'month') }
@@ -345,6 +352,14 @@ onMounted(() => {
             <template v-if="todayChange.valid">
               {{ todayChange.value > 0 ? '+' : '' }}{{ fmtMoney(todayChange.value, 0) }}
               ({{ todayChange.value > 0 ? '+' : '' }}{{ fmtPct(todayChange.pct) }})
+              <div
+                v-if="todayChange.kind === 'soft'"
+                class="muted"
+                style="font-size: 11px"
+                :title="`日线还没更新到 ${todayChange.baseDate} 之后，这个值可能是好几天的累计变化。点日历下方的「补全」补齐日线后恢复`"
+              >
+                自 {{ todayChange.baseDate.slice(5) }} 起
+              </div>
             </template>
             <span
               v-else
@@ -628,6 +643,26 @@ onMounted(() => {
             style="margin-top: 10px"
             @click="portfolio.retryKlines()"
           >补全</el-button>
+        </div>
+
+        <!-- 日线没跟上：历史是齐的，但最近几个交易日没更新。它既让净值曲线少掉最近的点、
+             「今日变化」也算成跨天累计值，又不落在 missing 里 —— 必须给个手动补救入口 -->
+        <div v-if="kCal.stale.length" class="h-status h-status-inline">
+          <div class="h-status-title">以下股票的日线还没更新到最新：</div>
+          <div class="h-missing-list">
+            {{ kCal.stale.map((x) => (x.name || x.code) + '（至 ' + x.last + '）').join('、') }}
+          </div>
+          <div class="muted" style="margin-top: 4px; line-height: 1.6">
+            日线落后会让净值曲线少掉最近几天，「今日变化」也算成好几天的累计值。点「补全」补齐后即恢复。
+          </div>
+          <el-button
+            size="small"
+            type="primary"
+            :loading="portfolio.klineSyncing"
+            style="margin-top: 10px"
+            @click="portfolio.retryKlines()"
+            >补全</el-button
+          >
         </div>
 
         <!-- 数据源本身没有：重试也不会有，只说明，不给按钮 -->
