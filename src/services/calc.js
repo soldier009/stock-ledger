@@ -670,6 +670,15 @@ export function tradedDaysOf(klines) {
  * 今天卖出的部分按 (成交价 − 昨收) 结算 —— 这段收益当天落袋，
  * 卖出之后股价再涨跌就与它无关了。
  *
+ * 补录的老仓（trades.origin='initial'，来自「＋新增资产 › 股票」且未关联扣款账户）
+ * 不属于「今日买入」：它此前就已持有，按昨收起算。跟踪起点（没有昨收）时这段
+ * 本来就不计入，所以不会把历史浮盈算成当天的盈亏。
+ *
+ * 注：这里**不含交易手续费**（浮动盈亏口径）。所以「今日盈亏」与总览「今日变化」
+ * （净资产口径，含手续费）的差额就是当日交易成本 —— 这是刻意的，两者不是同一个口径。
+ * 若日后要改成「净到手」口径，在此处扣减当日 fee/tax 即可，
+ * 记得同步 utils/pnl.js 的 todayBase（todayPct 拿它当分母）。
+ *
  * @param {number} price 现价（原币）
  * @param {number|null} prevClose 昨收，没有则为 null/0
  * @param {number} shares 当前持股
@@ -696,6 +705,10 @@ export function symbolDayPnl({ price, prevClose, shares, todayTrades }) {
         soldBase += prevClose * qty
       }
     } else if (isBuyType(t.type)) {
+      // 补录的老仓（origin='initial'）不算「今日买入」：它是此前就持有的仓位，
+      // 归入下面「昨收就持有」那段按昨收起算。若按成交价起算，会把好几年的累计浮盈
+      // 当成当天的盈亏 —— 实测补录 510880（成本 1.135、当日收盘 3.461）会虚增 2.3 万
+      if (t.origin === 'initial') continue
       bought += qty
       boughtLeg += (price - px) * qty // 按成交价起算，而不是昨收
       boughtBase += px * qty
