@@ -110,6 +110,31 @@ function setRefresh(minutes) {
   settings.saveRefreshMinutes(minutes)
 }
 
+// 多端数字对不上时的标准解法：丢弃本机行情缓存后整段重拉（只重拉行情，不动账本与同步）
+async function resetKlineCache() {
+  try {
+    await ElMessageBox.confirm(
+      '将丢弃本机的行情日K缓存，并重新拉取全部历史行情。\n\n' +
+        '只影响行情数据：账本里的交易、现金流水、券商与各项设置都不会动，也不影响多端同步。\n\n' +
+        '多端显示的数值不一致时使用（日K缓存本身不参与同步，各设备拉到的历史价可能不同）。\n' +
+        '重拉需要一点时间，请保持网络畅通。',
+      '重拉行情日K',
+      { type: 'warning', confirmButtonText: '开始重拉', cancelButtonText: '取消' }
+    )
+  } catch {
+    return /* 取消 */
+  }
+  const busy = ElMessage({ message: '正在重拉行情日K…', type: 'info', duration: 0 })
+  try {
+    await portfolio.resetKlines()
+    busy.close()
+    ElMessage.success('行情日K已重拉完成')
+  } catch (e) {
+    busy.close()
+    ElMessage.error('重拉失败：' + (e && e.message ? e.message : '未知错误'))
+  }
+}
+
 // 一次性诊断（用完即删，连同列表里的入口一起删）：查「今日变化」在几台设备上为何对不上
 async function showTodayChangeDiag() {
   const { buildTodayChangeReport } = await import('../diag2')
@@ -582,6 +607,12 @@ function commitRenamePurpose(oldTag) {
     <!-- ===== 关于 ===== -->
     <div class="group-title">关于</div>
     <div class="group" style="margin-bottom: 8px">
+      <div class="srow" @click="resetKlineCache">
+        <el-icon class="ico"><InfoFilled /></el-icon>
+        <span class="row-title">重拉行情日K</span>
+        <span class="row-value">多端数值不一致时用</span>
+        <el-icon class="chev"><ArrowRight /></el-icon>
+      </div>
       <div class="srow" @click="showTodayChangeDiag">
         <el-icon class="ico"><InfoFilled /></el-icon>
         <span class="row-title">今日变化诊断</span>

@@ -775,6 +775,41 @@ export const usePortfolioStore = defineStore('portfolio', {
       return this.syncKlines(true)
     },
 
+    /**
+     * 丢弃本机日K缓存，然后整段重新拉取。
+     *
+     * 日K缓存本就不参与多端同步（见 KLINE_KEY 处的说明），各设备在不同时刻拉到的
+     * 历史价可能不同 —— 数据源在分红除息后会回溯改写复权价，而 interval 之后只做
+     * 增量，历史部分不会被校正。同一份账本因此能算出不同的历史市值、不同的「今日变化」。
+     * 清掉重拉让本机回到「此刻数据源给出的数据」，是多端数字对不上时的标准解法。
+     *
+     * 只动行情缓存，账本（sqlite 里的交易/现金/设置）与同步状态都不受影响。
+     */
+    async resetKlines() {
+      if (this.klineSyncing) return
+      this.klineError = ''
+      try {
+        await setKv(KLINE_KEY, { bySymbol: {}, updatedAt: '' })
+      } catch {
+        /* 忽略 */
+      }
+      try {
+        // 大盘指数缓存同样不同步，留着旧值会与重拉后的个股K线对不齐
+        await setKv(INDEX_KEY, { byKey: {}, updatedAt: '' })
+      } catch {
+        /* 忽略 */
+      }
+      this.klineCache = { bySymbol: {}, updatedAt: '' }
+      this.indexCache = { byKey: {}, updatedAt: '' }
+      this.klineState = 'idle'
+      this.klineMissing = []
+      this.klinePartial = []
+      this.klineStale = []
+      this.klineTotal = 0
+      this.klineFetched = 0
+      return this.syncKlines(true)
+    },
+
     // 记一笔：写入交易，并同步股票主数据（含标签、所属券商）
     async addTrade(t) {
       const broker = t.broker || this.defaultBroker
