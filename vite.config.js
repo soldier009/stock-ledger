@@ -2,6 +2,7 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { VitePWA } from 'vite-plugin-pwa'
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 // 版本号单一来源：package.json 的 version，构建时注入为 __APP_VERSION__ 供界面显示
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf-8'))
@@ -36,6 +37,22 @@ export default defineConfig({
       load(id) {
         if (id !== '\0virtual:build-info') return null
         return `export const APP_VERSION = ${JSON.stringify(pkg.version)}\nexport const BUILD_TIME = ${JSON.stringify(buildTime)}\n`
+      }
+    },
+    {
+      // 升版本号后 dev server 不会自动重启，界面会一直停在启动时读到的那个旧版本：
+      // package.json 既不是 vite.config.js（改它 Vite 会主动重启），也不在它的模块依赖里
+      // （这里是 readFileSync 读的，不是 import），Vite 无从察觉改动。
+      // 手动监听并在变化后重启，改完版本号即时生效，不必再手工 Ctrl+C
+      name: 'restart-on-version',
+      configureServer(server) {
+        const pkgPath = fileURLToPath(new URL('./package.json', import.meta.url))
+        const target = pkgPath.toLowerCase()
+        server.watcher.add(pkgPath)
+        server.watcher.on('change', (p) => {
+          // Windows 下路径分隔符与大小写不完全一致，统一成小写再比
+          if (String(p).toLowerCase() === target) server.restart()
+        })
       }
     },
     vue(),
