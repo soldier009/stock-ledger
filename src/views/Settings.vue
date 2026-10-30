@@ -110,6 +110,18 @@ function setRefresh(minutes) {
   settings.saveRefreshMinutes(minutes)
 }
 
+// 一次性诊断（用完即删，连同列表里的入口一起删）：查「今日变化」在几台设备上为何对不上
+async function showTodayChangeDiag() {
+  const { buildTodayChangeReport } = await import('../diag2')
+  const msg = buildTodayChangeReport(portfolio)
+  console.log('[diag2]\n' + msg)
+  ElMessageBox.alert(
+    `<div style="white-space: pre-wrap; word-break: break-all; line-height: 1.6; font-family: Consolas, Monaco, monospace; font-size: 13px; text-align: left">${escHtml(msg)}</div>`,
+    '今日变化诊断',
+    { dangerouslyUseHTMLString: true, confirmButtonText: '知道了', customStyle: { maxWidth: '560px' } }
+  )
+}
+
 function showVersion() {
   ElMessageBox.alert(
     `股票记账本 v${APP_VERSION}，构建于 ${BUILD_TIME}。数据保存在本机浏览器（IndexedDB），通过 GitHub 私有仓库多端自动同步。`,
@@ -570,6 +582,12 @@ function commitRenamePurpose(oldTag) {
     <!-- ===== 关于 ===== -->
     <div class="group-title">关于</div>
     <div class="group" style="margin-bottom: 8px">
+      <div class="srow" @click="showTodayChangeDiag">
+        <el-icon class="ico"><InfoFilled /></el-icon>
+        <span class="row-title">今日变化诊断</span>
+        <span class="row-value">临时，用完删除</span>
+        <el-icon class="chev"><ArrowRight /></el-icon>
+      </div>
       <div class="srow" @click="showVersion">
         <el-icon class="ico"><InfoFilled /></el-icon>
         <span class="row-title">版本信息</span>
