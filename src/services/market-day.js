@@ -4,6 +4,7 @@
  * 避免两处各写一份 fetch / hosts / 解析器而逐渐走样（如少了 http 兜底域名）。
  */
 import { byDateAsc } from '../utils/sort'
+import { loadScript } from '../utils/jsonp'
 
 // 腾讯历史K：ifzq.gtimg.cn（无 web. 前缀）为当前可用入口；
 // web.ifzq.gtimg.cn 近期被腾讯 WAF 风控拦截（501），作为备用域名保留轮询
@@ -62,6 +63,38 @@ export async function tencentDay(symbol, from, to) {
     }
   }
   return null
+}
+
+/**
+ * 新浪美股/海外指数日K（jsonp）
+ *
+ * 走 <script> 标签而不是 fetch：新浪这个接口不发 CORS 头，fetch 会被浏览器拦掉，
+ * 而 script 不受跨域限制（与腾讯实时报价同一套路）。它也不像东财那样在部分网络下
+ * 被服务端断开 TLS —— 因此用作东财拿不到数据时的兜底源。
+ *
+ * @param {string} symbol 新浪符号，如 '.NDX'（纳指100）、'.IXIC'（纳斯达克综合）
+ * @returns {Array|null} [[date, close], ...] 升序，失败返回 null
+ */
+export async function sinaDay(symbol, from, to) {
+  const name = 'SLD' + Math.random().toString(36).slice(2, 8)
+  const url = `https://stock.finance.sina.com.cn/usstock/api/jsonp.php/var%20${name}=/US_MinKService.getDailyK?symbol=${encodeURIComponent(symbol)}`
+  try {
+    await loadScript(url, 15000)
+    const rows = window[name]
+    if (!Array.isArray(rows)) return null
+    const out = rows
+      .map((r) => [r.d, Number(r.c)])
+      .filter(([d, c]) => d && c > 0 && d >= from && d <= to)
+    return out.length ? sortDays(out) : null
+  } catch {
+    return null
+  } finally {
+    try {
+      delete window[name]
+    } catch {
+      /* 清理临时全局变量失败可忽略 */
+    }
+  }
 }
 
 /**
