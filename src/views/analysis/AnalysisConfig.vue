@@ -512,6 +512,10 @@ function onResize() {
 
 onMounted(async () => {
   await nextTick()
+  // 指数缓存为空时补拉一次（它的同步平时只在启动时跑，中途被清空就没人再拉，
+  // 结果就是对比曲线一直显示「无数据」）。幂等：有数据时 syncIndexes 自己会跳过
+  const by = (portfolio.indexCache && portfolio.indexCache.byKey) || {}
+  if (!Object.keys(by).length && !portfolio.indexSyncing) portfolio.syncIndexes()
   drawAssetCurve()
   window.addEventListener('resize', onResize)
 })

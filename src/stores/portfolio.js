@@ -807,7 +807,10 @@ export const usePortfolioStore = defineStore('portfolio', {
       this.klineStale = []
       this.klineTotal = 0
       this.klineFetched = 0
-      return this.syncKlines(true)
+      await this.syncKlines(true)
+      // 指数缓存上面也被清了，必须在这里补回来：syncIndexes 平时只在 init 跑一次，
+      // 不补的话资产曲线上的对比指数会一直显示「无数据」，直到下次冷启动
+      return this.syncIndexes()
     },
 
     // 记一笔：写入交易，并同步股票主数据（含标签、所属券商）
