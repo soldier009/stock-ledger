@@ -133,7 +133,15 @@ function r2(v) {
   return Math.round((Number(v) || 0) * 100) / 100
 }
 
-// 当前选择下的曲线数据：小类选「全部」时多组，选具体项时只画该组
+function flowSum(g) {
+  let s = 0
+  for (const v of Object.values(g || {})) s += Number(v) || 0
+  return s
+}
+
+// 当前选择下的曲线数据：小类选「全部」时多组，选具体项时只画该组。
+// 每条曲线带同长度的 flow（当日净流入，买入 + / 卖出净得 − / 分红 − / 送股 +），
+// 对比模式据此剔除资金进出做时间加权，见 compareSeries
 const assetChart = computed(() => {
   const rows = assetRows.value
   const dates = rows.map((p) => p.date)
@@ -141,7 +149,17 @@ const assetChart = computed(() => {
   const dim = assetDim.value
   const sub = assetSub.value
   if (dim === 'all') {
-    return { dates, series: [{ name: '持仓市值', color: '#dc2626', data: rows.map((p) => r2(p.marketValue)) }] }
+    return {
+      dates,
+      series: [
+        {
+          name: '持仓市值',
+          color: '#dc2626',
+          data: rows.map((p) => r2(p.marketValue)),
+          flow: rows.map((p) => r2(flowSum(p.byMarketFlow)))
+        }
+      ]
+    }
   }
   if (dim === 'stock') {
     const keys = assetGroupKeys.value.filter((k) => sub === 'all' || k === sub)
@@ -149,7 +167,12 @@ const assetChart = computed(() => {
       dates,
       series: keys.map((k) => {
         const m = MARKET_SERIES.find((x) => x.key === k) || { label: k, color: '#64748b' }
-        return { name: m.label, color: m.color, data: rows.map((p) => r2((p.byMarket || {})[k] || 0)) }
+        return {
+          name: m.label,
+          color: m.color,
+          data: rows.map((p) => r2((p.byMarket || {})[k] || 0)),
+          flow: rows.map((p) => r2((p.byMarketFlow || {})[k] || 0))
+        }
       })
     }
   }
@@ -165,6 +188,11 @@ const assetChart = computed(() => {
         color: isOther ? '#94a3b8' : TAG_COLORS[idx % TAG_COLORS.length],
         data: rows.map((p) => {
           const g = p.byTag || {}
+          if (isOther) return r2(rest.reduce((a, kk) => a + (g[kk] || 0), 0))
+          return r2(g[k] || 0)
+        }),
+        flow: rows.map((p) => {
+          const g = p.byTagFlow || {}
           if (isOther) return r2(rest.reduce((a, kk) => a + (g[kk] || 0), 0))
           return r2(g[k] || 0)
         })
@@ -213,7 +241,8 @@ const assetYMin = computed(() => axisMin(assetYVals.value) ?? 0)
 const assetYMax = computed(() => axisMax(assetYVals.value))
 
 // ===== 资产曲线的收益对比（大盘指数）=====
-// 组合是金额、指数是点位，量纲不同：统一把区间起点归一化为 100，比较的是收益率
+// 组合侧用时间加权收益率（日收益 = (Δ市值 − 当日净流入) / 前一日市值，逐日连乘），
+// 指数侧归一化到 100 —— 市值曲线会把每笔买入当成「涨」，和指数没有可比性
 const CMP_KEY = 'stock-ledger-cmp-v1'
 const compareOn = ref([])
 getKv(CMP_KEY)
@@ -242,21 +271,48 @@ const portfolioValues = computed(() => {
   return out
 })
 
-// 归一化序列：组合 + 选中的指数，均以区间第一个有效值为 100
+// 与 portfolioValues 同口径的当日净流入合计
+const portfolioFlows = computed(() => {
+  const { series } = assetChart.value
+  if (!series.length) return []
+  const n = (series[0].data || []).length
+  const out = []
+  for (let i = 0; i < n; i++) {
+    let sum = 0
+    for (const s of series) sum += Number((s.flow || [])[i]) || 0
+    out.push(sum)
+  }
+  return out
+})
+
+// 组合 + 选中的指数：组合用时间加权收益率（起点=100），指数归一化到起点=100
 const compareSeries = computed(() => {
   const { dates } = assetChart.value
   if (!dates.length || !compareOn.value.length) return []
   const out = []
   const vals = portfolioValues.value
+  const flows = portfolioFlows.value
   const pIdx = vals.findIndex((v) => v > 0.005)
   if (pIdx >= 0) {
-    const base = vals[pIdx]
-    out.push({
-      name: '我的持仓',
-      color: '#dc2626',
-      width: 2.5,
-      data: vals.map((v) => (base ? Math.round((v / base) * 10000) / 100 : null))
-    })
+    const twr = []
+    let acc = 100
+    let prev = 0
+    for (let i = 0; i < vals.length; i++) {
+      const v = vals[i]
+      if (i < pIdx) {
+        twr.push(null)
+        continue
+      }
+      if (prev > 0.005) {
+        acc = acc * (1 + (v - prev - (flows[i] || 0)) / prev)
+      } else {
+        // 首日建仓 / 清仓后再建仓：当日即新的本金基准，与前段不可比
+        acc = 100
+      }
+      twr.push(Math.round(acc * 100) / 100)
+      prev = v
+    }
+    out.push({ name: '我的持仓', color: '#dc2626', width: 2.5, data: twr })
   }
   const cache = (portfolio.indexCache && portfolio.indexCache.byKey) || {}
   for (const key of compareOn.value) {
@@ -574,7 +630,7 @@ onBeforeUnmount(() => {
       <div ref="assetRef" class="chart"></div>
       <div v-if="!assetHasData" class="muted" style="text-align: center; padding: 4px 0 8px">暂无数据</div>
       <div class="muted" style="font-size: 11px; margin-top: 2px">
-        {{ compareMode ? '口径：全部归一化到区间起点（收益对比，买入/入金会造成台阶）' : '口径：持仓市值（不含现金），按当日收盘价估值' }}
+        {{ compareMode ? '口径：时间加权收益率，已剔除买卖/分红的资金进出（起点=100，可与指数直接对比）' : '口径：持仓市值（不含现金），按当日收盘价估值' }}
       </div>
     </div>
 

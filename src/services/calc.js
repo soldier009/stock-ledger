@@ -499,6 +499,17 @@ function buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, 
     return posMap.get(key)
   }
 
+  // 当日的分组资金流（外部进出，折算 CNY）：买入为流入、卖出净得为流出、分红为流出、
+  // 送股/转仓按市值计为流入。资产曲线的对比模式用它做时间加权 —— 子集曲线只有市值、
+  // 没有现金，不剔除这些进出的话，每笔买入都会被当成「涨」（详见 AnalysisConfig 对比口径）
+  let flow = { byMarket: {}, byTag: {} }
+  const addFlow = (market, tag, amt) => {
+    if (!amt) return
+    flow.byMarket[market] = (flow.byMarket[market] || 0) + amt
+    const k = tag || NO_TAG
+    flow.byTag[k] = (flow.byTag[k] || 0) + amt
+  }
+
   const processTrade = (t) => {
     const fee = Number(t.fee) || 0
     const tax = Number(t.tax) || 0
@@ -511,6 +522,8 @@ function buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, 
       p.shares += n(t.shares)
       p.avgCost = p.shares > 0 ? p.basis / p.shares : 0
       if (!t.no_cash) cash -= cost
+      // 流入按实际付出的成本计（含费税）；no_cash（划转等）没付现金，但市值确实增加了，同样算流入
+      addFlow(t.market, p.tag, cost * rateOf(t.market, rates))
     } else if (type === 'sell') {
       const p = posMap.get(`${t.market}:${t.code}`)
       const want = n(t.shares)
@@ -521,6 +534,8 @@ function buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, 
         p.shares -= qty
         p.avgCost = p.shares > 0 ? p.basis / p.shares : 0
         cash += price * qty - fee - tax
+        // 流出按实际拿到的净得计（扣费税）；超出持仓的部分不减少市值，也不算流出
+        addFlow(t.market, p.tag, -(price * qty - fee - tax) * rateOf(t.market, rates))
       }
       // 与 computeAll 同口径：超出持仓的部分不计已实现盈亏，但资金计入现金
       const extra = want - qty
@@ -528,10 +543,17 @@ function buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, 
     } else if (type === 'div') {
       const amt = Number(t.amount) || 0
       cash += amt
+      // 分红现金进了账户现金、不在持仓子组合里，对市值曲线而言是一次流出
+      //（不计的话除息日的股价下调会被当成亏损）
+      const p0 = posMap.get(`${t.market}:${t.code}`)
+      addFlow(t.market, p0 ? p0.tag : '', -amt * rateOf(t.market, rates))
     } else if (type === 'gift') {
       const p = ensurePos(t.market, t.code)
       p.shares += n(t.shares)
       p.avgCost = p.shares > 0 ? p.basis / p.shares : 0
+      // 送股/转仓没付钱但市值增加了：按市值计流入，否则会被当成凭空收益
+      const pv = (price > 0 ? price : p.avgCost) * n(t.shares)
+      addFlow(t.market, p.tag, pv * rateOf(t.market, rates))
     }
   }
 
@@ -566,6 +588,7 @@ function buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, 
   const points = []
 
   for (const date of sortedDates) {
+    flow = { byMarket: {}, byTag: {} }
     while (ti < allTrades.length && allTrades[ti].date <= date) {
       if (allTrades[ti].date === date) processTrade(allTrades[ti])
       ti++
@@ -599,7 +622,18 @@ function buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, 
         if (sym) sym[`${p.market}:${p.code}`] = { shares: p.shares, basis: p.basis, value: v }
       }
     }
-    points.push({ date, cash, marketValue: mv, byMarket, byTag, byPurpose, sym, notes: noteMap.get(date) || [] })
+    points.push({
+      date,
+      cash,
+      marketValue: mv,
+      byMarket,
+      byTag,
+      byMarketFlow: flow.byMarket,
+      byTagFlow: flow.byTag,
+      byPurpose,
+      sym,
+      notes: noteMap.get(date) || []
+    })
   }
   return points
 }
@@ -804,7 +838,8 @@ export function netValueExFlows(series) {
 
 /**
  * 资产曲线：逐日持仓市值，并按市场 / 按标签拆出各分组市值（不含现金）
- * meta 同 buildDailyAssets
+ * meta 同 buildDailyAssets；byMarketFlow / byTagFlow 为当日各分组的外部资金净流入
+ * （买入 +、卖出净得 −、分红 −、送股 +，折算 CNY），供对比模式做时间加权收益率
  */
 export function assetValueSeries(trades, cashFlows, currentPrices, rates, currentDate, klines, meta, opts = {}) {
   return buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, klines, meta, opts).map((p) => ({
@@ -812,6 +847,8 @@ export function assetValueSeries(trades, cashFlows, currentPrices, rates, curren
     marketValue: p.marketValue,
     byMarket: p.byMarket,
     byTag: p.byTag,
+    byMarketFlow: p.byMarketFlow,
+    byTagFlow: p.byTagFlow,
     byPurpose: p.byPurpose
   }))
 }
