@@ -10,6 +10,7 @@ import {
   renameBroker as dbRenameBroker,
   deleteBroker as dbDeleteBroker,
   getDefaultBroker as dbGetDefaultBroker,
+  updateBrokerFee as dbUpdateBrokerFee,
   setDefaultBroker as dbSetDefaultBroker,
   markDirty,
   getKv,
@@ -65,6 +66,8 @@ export const usePortfolioStore = defineStore('portfolio', {
     cashFlows: [],
     stocks: [],
     brokers: [],
+    // 券商佣金配置：{ 券商名: { rate, min } }，rate 为小数（万2.5 = 0.00025）
+    brokerFee: {},
     defaultBroker: DEFAULT_BROKER,
     positions: [],
     realizedEvents: [],
@@ -162,7 +165,13 @@ export const usePortfolioStore = defineStore('portfolio', {
       this.trades = all('SELECT * FROM trades ORDER BY date, id')
       this.cashFlows = all('SELECT * FROM cash_flows ORDER BY date, id')
       this.syncStocks()
-      this.brokers = getBrokers().map((b) => b.name)
+      const brokerRows = getBrokers()
+      this.brokers = brokerRows.map((b) => b.name)
+      const feeMap = {}
+      for (const b of brokerRows) {
+        feeMap[b.name] = { rate: Number(b.fee_rate) || 0, min: Number(b.fee_min) || 0 }
+      }
+      this.brokerFee = feeMap
       // 读取默认券商设置并校验：必须存在于券商列表，否则回退到「默认账户」或列表中首个券商
       let def = dbGetDefaultBroker()
       if (!this.brokers.includes(def)) {
@@ -1218,6 +1227,18 @@ export const usePortfolioStore = defineStore('portfolio', {
       if (!n) return
       if (get('SELECT id FROM brokers WHERE name = ?', [n])) return
       insertBroker(n)
+      await this.loadData()
+      markDirty()
+      await persist()
+    },
+
+    /**
+     * 保存券商佣金配置。买卖表单据此自动带出手续费（见 utils/fee.js 的 calcBrokerFee）。
+     * rate 传小数：万2.5 传 0.00025；min 为最低佣金（元），0 表示无下限。
+     */
+    async setBrokerFee(name, rate, min) {
+      if (!this.brokers.includes(name)) return
+      dbUpdateBrokerFee(name, rate, min)
       await this.loadData()
       markDirty()
       await persist()

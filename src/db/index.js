@@ -92,6 +92,10 @@ function migrate() {
   // ref_id 指向 trades.id：「新建仓」自动生成的入金记录，用这一列精确定位它对应的买入记录，
   // 使两边联动（改金额 / 改日期 / 删除）不再依赖「金额 + 日期」猜测
   try { run('ALTER TABLE cash_flows ADD COLUMN ref_id INTEGER DEFAULT NULL') } catch {}
+  // 券商佣金配置：费率按小数存（万2.5 = 0.00025），fee_min 为最低佣金（元）。
+  // 买卖记账时据此自动带出手续费，0 表示未设置（保持手填）
+  try { run('ALTER TABLE brokers ADD COLUMN fee_rate REAL DEFAULT 0') } catch {}
+  try { run('ALTER TABLE brokers ADD COLUMN fee_min REAL DEFAULT 0') } catch {}
   // 确保至少存在一个券商账户
   const cnt = get('SELECT COUNT(*) AS c FROM brokers')
   if (!cnt || cnt.c === 0) run('INSERT INTO brokers (name) VALUES (?)', [DEFAULT_BROKER])
@@ -367,6 +371,15 @@ export function getBrokers() {
 
 export function insertBroker(name) {
   run('INSERT INTO brokers (name) VALUES (?)', [name])
+}
+
+/** 券商佣金配置：rate 为小数（万2.5 = 0.00025），min 为最低佣金（元） */
+export function updateBrokerFee(name, rate, min) {
+  run('UPDATE brokers SET fee_rate = ?, fee_min = ? WHERE name = ?', [
+    Number(rate) || 0,
+    Number(min) || 0,
+    name
+  ])
 }
 
 export function renameBroker(oldName, newName) {

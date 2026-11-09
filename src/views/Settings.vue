@@ -401,6 +401,35 @@ async function commitRenameBroker(oldName) {
   ElMessage.success('已重命名')
 }
 
+// ===== 券商佣金 =====
+// 佣金率按「万分之几」录入（用户习惯口径），存库时换算成小数（万2.5 = 0.00025）
+const editingFee = ref('')
+const feeRateWan = ref(null)
+const feeMin = ref(null)
+
+function startEditFee(name) {
+  editingFee.value = name
+  const cfg = (portfolio.brokerFee || {})[name] || { rate: 0, min: 0 }
+  feeRateWan.value = cfg.rate ? Math.round(cfg.rate * 10000 * 100) / 100 : null
+  feeMin.value = cfg.min || null
+}
+
+async function commitFee(name) {
+  const wan = Number(feeRateWan.value) || 0
+  await portfolio.setBrokerFee(name, wan / 10000, Number(feeMin.value) || 0)
+  editingFee.value = ''
+  ElMessage.success('佣金设置已保存')
+}
+
+function feeText(name) {
+  const cfg = (portfolio.brokerFee || {})[name] || { rate: 0, min: 0 }
+  if (!cfg.rate && !cfg.min) return '未设置佣金'
+  const parts = []
+  if (cfg.rate) parts.push(`万${Math.round(cfg.rate * 10000 * 100) / 100}`)
+  if (cfg.min) parts.push(`最低 ${cfg.min} 元`)
+  return parts.join(' · ')
+}
+
 // ===== 标签管理 =====
 const newTag = ref('')
 const editingTag = ref('')
@@ -773,24 +802,41 @@ function commitRenamePurpose(oldTag) {
 
           <!-- 券商管理 -->
           <template v-else-if="sheet === 'brokers'">
-            <div class="st-note">建立多个券商账户分别记账。股票的买卖、分红与资金出入只在该股票所属券商账户内流动。至少保留一个账户。</div>
+            <div class="st-note">
+              建立多个券商账户分别记账。股票的买卖、分红与资金出入只在该股票所属券商账户内流动。至少保留一个账户。
+              设置佣金后，买卖记账时手续费会按成交金额自动带出（仍可手改）。
+            </div>
             <div class="row gap8" style="margin: 12px 0">
               <el-input v-model="newBroker" placeholder="券商名称，如：华泰证券" @keyup.enter="addBroker" />
               <el-button type="primary" @click="addBroker">添加</el-button>
             </div>
-            <div v-for="b in portfolio.brokers" :key="b" class="tag-row">
+            <div v-for="b in portfolio.brokers" :key="b" class="tag-row broker-row">
               <template v-if="editingBroker === b">
                 <el-input v-model="brokerRename" size="small" style="flex: 1" @keyup.enter="commitRenameBroker(b)" />
                 <el-button size="small" type="primary" @click="commitRenameBroker(b)">保存</el-button>
                 <el-button size="small" @click="editingBroker = ''">取消</el-button>
+              </template>
+              <template v-else-if="editingFee === b">
+                <div class="row gap8" style="flex: 1; align-items: center">
+                  <el-input-number v-model="feeRateWan" :min="0" :precision="2" :controls="false" size="small" placeholder="费率" style="width: 88px" />
+                  <span class="muted">万分之</span>
+                  <el-input-number v-model="feeMin" :min="0" :precision="2" :controls="false" size="small" placeholder="最低" style="width: 88px" />
+                  <span class="muted">元起</span>
+                </div>
+                <div class="row gap4">
+                  <el-button size="small" type="primary" @click="commitFee(b)">保存</el-button>
+                  <el-button size="small" @click="editingFee = ''">取消</el-button>
+                </div>
               </template>
               <template v-else>
                 <div class="row gap8">
                   <span class="tag-name">{{ b }}</span>
                   <span v-if="b === portfolio.defaultBroker" class="muted" style="font-size: 12px">（默认）</span>
                 </div>
+                <div class="muted" style="font-size: 12px; flex-basis: 100%">{{ feeText(b) }}</div>
                 <div class="row gap4">
                   <el-button v-if="b !== portfolio.defaultBroker" size="small" text type="primary" @click="setDefaultBroker(b)">设为默认</el-button>
+                  <el-button size="small" text @click="startEditFee(b)">佣金</el-button>
                   <el-button size="small" text @click="startRenameBroker(b)">重命名</el-button>
                   <el-button size="small" text type="danger" @click="removeBroker(b)">删除</el-button>
                 </div>
@@ -1102,6 +1148,10 @@ function commitRenamePurpose(oldTag) {
 }
 .tag-row:last-child {
   border-bottom: none;
+}
+/* 券商行比标签多一行佣金说明，允许换行：名称 / 佣金 / 操作按钮 各占一行 */
+.broker-row {
+  flex-wrap: wrap;
 }
 .tag-name {
   font-size: 14px;

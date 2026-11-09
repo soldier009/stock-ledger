@@ -8,6 +8,7 @@ import { useIpoStore } from '../stores/ipo'
 import { useSettingsStore } from '../stores/settings'
 import { computeAll } from '../services/calc'
 import { fmtMoney, fmtNum, fmtShares, fmtPct, pnlClass, marketLabel, parseTags, typeLabel, rateOf, assetClass, assetClassLabel, ASSET_CLASSES } from '../utils/format'
+import { calcBrokerFee } from '../utils/fee'
 import { DEFAULT_BROKER } from '../constants'
 import TradeForm from '../components/TradeForm.vue'
 
@@ -240,12 +241,24 @@ const overSell = computed(() => quick.type === 'sell' && quickShares.value > (ho
 const amountDisabled = computed(() => !effPrice.value)
 const sharePrecision = computed(() => (market === 'A' ? 0 : 3))
 
-// A股卖出自动带出印花税（与完整表单同一口径），只在未手填时补
+// 费用自动带出（与完整表单同一口径）：手续费按券商佣金率估算，A股卖出带印花税。
+// 手改过就不再覆盖 —— 券商可能还有过户费、平台费等，以手填为准
+const quickFeeTouched = ref(false)
+const quickTaxTouched = ref(false)
 watch(
-  () => [quick.type, quickShares.value, effPrice.value],
+  () => [quick.type, quick.broker, quickShares.value, effPrice.value],
   () => {
-    if (quick.type === 'sell' && market === 'A' && Number(quick.tax) === 0) {
-      quick.tax = Math.round(quickShares.value * effPrice.value * (settings.stampTaxRate || 0.0005) * 100) / 100
+    const amt = quickShares.value * effPrice.value
+    if (!quickFeeTouched.value) {
+      const next = calcBrokerFee(amt, (portfolio.brokerFee || {})[quick.broker])
+      if (Number(quick.fee) !== next) quick.fee = next
+    }
+    if (!quickTaxTouched.value) {
+      const tax =
+        quick.type === 'sell' && market === 'A' && amt > 0
+          ? Math.round(amt * (settings.stampTaxRate || 0.0005) * 100) / 100
+          : 0
+      if (Number(quick.tax) !== tax) quick.tax = tax
     }
   }
 )
@@ -476,11 +489,11 @@ function syncPurposes(v) {
           </div>
           <div>
             <div class="muted">手续费</div>
-            <el-input-number v-model="quick.fee" :min="0" :precision="2" :controls="false" size="small" style="width: 100%" />
+            <el-input-number v-model="quick.fee" :min="0" :precision="2" :controls="false" size="small" style="width: 100%" @change="quickFeeTouched = true" />
           </div>
           <div>
             <div class="muted">税费</div>
-            <el-input-number v-model="quick.tax" :min="0" :precision="2" :controls="false" size="small" style="width: 100%" />
+            <el-input-number v-model="quick.tax" :min="0" :precision="2" :controls="false" size="small" style="width: 100%" @change="quickTaxTouched = true" />
           </div>
           <div>
             <div class="muted">{{ quick.type === 'buy' ? '扣款账户' : '到账账户' }}</div>

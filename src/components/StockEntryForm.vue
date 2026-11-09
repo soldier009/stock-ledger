@@ -1,11 +1,12 @@
 <script setup>
-import { reactive, ref, computed, nextTick } from 'vue'
+import { reactive, ref, computed, nextTick, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import dayjs from 'dayjs'
 import { usePortfolioStore } from '../stores/portfolio'
 import { useSettingsStore } from '../stores/settings'
 import { lookupQuote } from '../services/quotes'
 import { fmtNum, fmtMoney } from '../utils/format'
+import { calcBrokerFee } from '../utils/fee'
 import { DEFAULT_BROKER } from '../constants'
 
 // 表单主体：既被「新建仓」弹窗引用，也被「新增资产」页面的股票页签引用。
@@ -18,6 +19,8 @@ const emit = defineEmits(['saved'])
 const portfolio = usePortfolioStore()
 const settings = useSettingsStore()
 const submitting = ref(false)
+// 手续费是否被手动改过（改过就不再按佣金自动覆盖）
+const feeTouched = ref(false)
 const lookupError = ref('')
 // 查到的当前价，仅作参考展示（补录时要填的是历史成本价）
 const lastPrice = ref(null)
@@ -42,6 +45,7 @@ const form = reactive({
 function reset() {
   lookupError.value = ''
   lastPrice.value = null
+  feeTouched.value = false
   Object.assign(form, {
     market: 'A',
     code: '',
@@ -85,6 +89,18 @@ const sharePrecision = computed(() => (form.market === 'A' ? 0 : 3))
 // 含费总成本：费用与数量×价格一样计入成本与本金
 const totalCost = computed(
   () => (Number(form.shares) || 0) * (Number(form.costPrice) || 0) + (Number(form.fee) || 0)
+)
+
+// 关联扣款账户（真实买入）时按券商佣金自动带出手续费；
+// 补录历史持仓的手续费是历史实付值，不参与估算，保持手填
+watch(
+  () => [form.linkCash, form.broker, form.shares, form.costPrice],
+  () => {
+    if (feeTouched.value || !form.linkCash) return
+    const amt = (Number(form.shares) || 0) * (Number(form.costPrice) || 0)
+    const next = calcBrokerFee(amt, (portfolio.brokerFee || {})[form.broker])
+    if (Number(form.fee) !== next) form.fee = next
+  }
 )
 
 // 关联账户的可用余额，用于提示「扣款后会不会变负」
@@ -259,8 +275,8 @@ defineExpose({ submit, reset, submitting })
       </div>
 
       <el-form-item label="手续费（元）">
-        <el-input-number v-model="form.fee" :min="0" :precision="2" :controls="false" placeholder="佣金等，可选" style="width: 100%" />
-        <div class="muted" style="margin-top: 4px">计入成本与本金，留空则为 0</div>
+        <el-input-number v-model="form.fee" :min="0" :precision="2" :controls="false" placeholder="佣金等，可选" style="width: 100%" @change="feeTouched = true" />
+        <div class="muted" style="margin-top: 4px">计入成本与本金，留空则为 0；关联扣款时按券商佣金自动带出</div>
       </el-form-item>
 
       <el-form-item label="所属券商">

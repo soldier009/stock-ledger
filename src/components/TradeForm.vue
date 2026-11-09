@@ -6,6 +6,7 @@ import { usePortfolioStore } from '../stores/portfolio'
 import { useSettingsStore } from '../stores/settings'
 import { lookupQuote } from '../services/quotes'
 import { fmtNum, parseTags, marketLabel } from '../utils/format'
+import { calcBrokerFee } from '../utils/fee'
 import { debounce } from '../utils/debounce'
 import { DEFAULT_BROKER } from '../constants'
 
@@ -26,6 +27,10 @@ const locked = computed(() => !props.trade && !!props.preset)
 const title = ref('记一笔')
 const lookupError = ref('')
 const tagSelect = ref(null)
+// 费用两个字段的「自动值」标记：手改过就不再覆盖（券商还有过户费/平台费等，以手填为准）。
+// 旧写法按「字段为 0 才填」判断，导致先填数量带出税、再改数量时税额不再更新
+const feeTouched = ref(false)
+const taxTouched = ref(false)
 
 const form = reactive({
   type: 'div',
@@ -77,11 +82,17 @@ watch(visible, (v) => {
       broker: t.broker || (st && st.broker) || defaultBroker()
     })
     chargeCash.value = !t.no_cash
+    // 编辑已有记录：费用都是当时实付的，保留原值，不参与自动估算
+    feeTouched.value = true
+    taxTouched.value = true
   } else {
     title.value = '记一笔'
     // 新增一定回到「扣款」。不重置的话，编辑过一笔 no_cash=1 的记录之后再记新交易，
     // 开关会残留在「不扣款」上，让人不知不觉记出错账
     chargeCash.value = true
+    // 新记录恢复自动估算
+    feeTouched.value = false
+    taxTouched.value = false
     if (props.preset) {
       Object.assign(form, {
         type: 'div',
@@ -196,15 +207,33 @@ const computedAmount = computed(() => {
   return q * p + fee + tax
 })
 
-function suggestTax() {
-  if (form.type === 'sell' && form.market === 'A' && Number(form.tax) === 0) {
-    const q = Number(form.shares) || 0
-    const p = Number(form.price) || 0
-    form.tax = Math.round(q * p * (settings.stampTaxRate || 0.0005) * 100) / 100
-  }
+// 费用两个字段的「自动值」规则见 feeTouched / taxTouched（声明在文件上方）
+// 手续费：按所属券商的佣金率与最低佣金估算，买卖都算
+function suggestFee() {
+  if (feeTouched.value) return
+  const q = Number(form.shares) || 0
+  const p = Number(form.price) || 0
+  const amt = q > 0 && p > 0 ? q * p : 0
+  const next = calcBrokerFee(amt, (portfolio.brokerFee || {})[form.broker])
+  if (Number(form.fee) !== next) form.fee = next
 }
 
-watch(() => [form.type, form.market, form.shares, form.price], suggestTax)
+// 税费：A股卖出按全局印花税率带出；其余情况自动值归零，避免切换类型后残留
+function suggestTax() {
+  if (taxTouched.value) return
+  const q = Number(form.shares) || 0
+  const p = Number(form.price) || 0
+  const next =
+    form.type === 'sell' && form.market === 'A' && q > 0 && p > 0
+      ? Math.round(q * p * (settings.stampTaxRate || 0.0005) * 100) / 100
+      : 0
+  if (Number(form.tax) !== next) form.tax = next
+}
+
+watch(() => [form.type, form.market, form.shares, form.price, form.broker], () => {
+  suggestFee()
+  suggestTax()
+})
 
 // A股没有碎股：数量输入精度按市场切换（港股/美股保留 3 位小数）
 const sharePrecision = computed(() => (form.market === 'A' ? 0 : 3))
@@ -460,15 +489,15 @@ function reset() {
       <template v-if="form.type !== 'div' && form.type !== 'gift'">
         <div class="row gap8">
           <el-form-item label="手续费" class="flex1">
-            <el-input-number v-model="form.fee" :min="0" :precision="2" :controls="false" style="width: 100%" />
+            <el-input-number v-model="form.fee" :min="0" :precision="2" :controls="false" style="width: 100%" @change="feeTouched = true" />
           </el-form-item>
           <el-form-item label="税费(印花税等)" class="flex1">
-            <el-input-number v-model="form.tax" :min="0" :precision="2" :controls="false" style="width: 100%" />
+            <el-input-number v-model="form.tax" :min="0" :precision="2" :controls="false" style="width: 100%" @change="taxTouched = true" />
           </el-form-item>
         </div>
         <div v-if="computedAmount !== null" class="amount-preview num">
           {{ form.type === 'sell' ? '实收金额' : '总成本' }}：<b>¥{{ fmtNum(computedAmount, 2) }}</b>
-          <span class="muted">（A股卖出印花税默认 0.05%，可手动修改）</span>
+          <span class="muted">（手续费按券商佣金自动带出，A股卖出印花税默认 0.05%，均可手改）</span>
         </div>
         <el-form-item v-if="isBuyLikeType" label="从券商扣款">
           <el-switch v-model="chargeCash" />
