@@ -167,9 +167,20 @@ export const usePortfolioStore = defineStore('portfolio', {
       this.syncStocks()
       const brokerRows = getBrokers()
       this.brokers = brokerRows.map((b) => b.name)
+      // 佣金档位：优先读分档 JSON；只有单档老配置时，把它当作兜底档
       const feeMap = {}
       for (const b of brokerRows) {
-        feeMap[b.name] = { rate: Number(b.fee_rate) || 0, min: Number(b.fee_min) || 0 }
+        let tiers = []
+        try {
+          const parsed = JSON.parse(b.fee_json || '[]')
+          if (Array.isArray(parsed)) tiers = parsed
+        } catch {
+          tiers = []
+        }
+        if (!tiers.length && (Number(b.fee_rate) || Number(b.fee_min))) {
+          tiers = [{ key: 'default', rate: Number(b.fee_rate) || 0, min: Number(b.fee_min) || 0 }]
+        }
+        feeMap[b.name] = { tiers }
       }
       this.brokerFee = feeMap
       // 读取默认券商设置并校验：必须存在于券商列表，否则回退到「默认账户」或列表中首个券商
@@ -1233,12 +1244,13 @@ export const usePortfolioStore = defineStore('portfolio', {
     },
 
     /**
-     * 保存券商佣金配置。买卖表单据此自动带出手续费（见 utils/fee.js 的 calcBrokerFee）。
+     * 保存券商佣金档位。买卖表单据此自动带出手续费（见 utils/fee.js 的 calcBrokerFee）。
+     * tiers = [{ key: 'stock'|'fund'|'bond'|'default', rate, min }]，
      * rate 传小数：万2.5 传 0.00025；min 为最低佣金（元），0 表示无下限。
      */
-    async setBrokerFee(name, rate, min) {
+    async setBrokerFee(name, tiers) {
       if (!this.brokers.includes(name)) return
-      dbUpdateBrokerFee(name, rate, min)
+      dbUpdateBrokerFee(name, tiers)
       await this.loadData()
       markDirty()
       await persist()

@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import dayjs from 'dayjs'
 import { usePortfolioStore } from '../stores/portfolio'
@@ -9,6 +10,7 @@ import { exportExcel, exportPdf, buildReportData } from '../services/export'
 import { testConnection, downloadBackup, parseRepo } from '../services/github'
 import { testIpoConnection } from '../services/ipo'
 
+const router = useRouter()
 const portfolio = usePortfolioStore()
 const settings = useSettingsStore()
 
@@ -72,7 +74,6 @@ const SHEET_TITLES = {
   itick: '新股数据源（iTick）',
   refresh: '行情刷新',
   rates: '汇率设置',
-  brokers: '券商管理',
   tags: '标签管理',
   purposes: '用途标签管理',
   docs: '数据说明'
@@ -80,7 +81,7 @@ const SHEET_TITLES = {
 const sheetTitle = computed(() => SHEET_TITLES[sheet.value] || '')
 // 表单类抽屉给足高度，纯说明/选项类收紧一些
 const sheetSize = computed(() =>
-  ['sync', 'brokers', 'tags', 'purposes'].includes(sheet.value) ? 'min(640px, 84vh)' : 'min(640px, 62vh)'
+  ['sync', 'tags', 'purposes'].includes(sheet.value) ? 'min(640px, 84vh)' : 'min(640px, 62vh)'
 )
 
 /** 验证 iTick API key：只发一个请求，结果直接弹提示，不用开控制台 */
@@ -350,85 +351,7 @@ function saveRates() {
   ElMessage.success('汇率已保存')
 }
 
-// ===== 券商管理 =====
-const newBroker = ref('')
-const editingBroker = ref('')
-const brokerRename = ref('')
-
-async function addBroker() {
-  const n = newBroker.value.trim()
-  if (!n) return
-  if (portfolio.brokers.includes(n)) return ElMessage.warning('券商已存在')
-  await portfolio.addBroker(n)
-  newBroker.value = ''
-  ElMessage.success('已添加')
-}
-
-async function removeBroker(name) {
-  if (portfolio.brokers.length <= 1) return ElMessage.warning('至少保留一个券商')
-  let msg
-  if (name === portfolio.defaultBroker) {
-    const next = portfolio.brokers.find((b) => b !== name) || portfolio.defaultBroker
-    msg = `「${name}」是当前默认账户，删除后默认账户将切换为「${next}」，其名下数据也会一并归入该账户。确定删除？`
-  } else {
-    msg = `删除券商「${name}」后，其名下股票与交易将归入「${portfolio.defaultBroker}」账户，确定删除？`
-  }
-  try {
-    await ElMessageBox.confirm(msg, '删除券商', { type: 'warning' })
-    await portfolio.deleteBroker(name)
-    ElMessage.success('已删除')
-  } catch {
-    /* 取消 */
-  }
-}
-
-async function setDefaultBroker(b) {
-  await portfolio.setDefaultBroker(b)
-  ElMessage.success(`已将「${b}」设为默认账户`)
-}
-
-function startRenameBroker(name) {
-  editingBroker.value = name
-  brokerRename.value = name
-}
-
-async function commitRenameBroker(oldName) {
-  const n = brokerRename.value.trim()
-  if (!n) return ElMessage.warning('名称不能为空')
-  if (portfolio.brokers.includes(n) && n !== oldName) return ElMessage.warning('券商已存在')
-  await portfolio.renameBroker(oldName, n)
-  editingBroker.value = ''
-  ElMessage.success('已重命名')
-}
-
-// ===== 券商佣金 =====
-// 佣金率按「万分之几」录入（用户习惯口径），存库时换算成小数（万2.5 = 0.00025）
-const editingFee = ref('')
-const feeRateWan = ref(null)
-const feeMin = ref(null)
-
-function startEditFee(name) {
-  editingFee.value = name
-  const cfg = (portfolio.brokerFee || {})[name] || { rate: 0, min: 0 }
-  feeRateWan.value = cfg.rate ? Math.round(cfg.rate * 10000 * 100) / 100 : null
-  feeMin.value = cfg.min || null
-}
-
-async function commitFee(name) {
-  const wan = Number(feeRateWan.value) || 0
-  await portfolio.setBrokerFee(name, wan / 10000, Number(feeMin.value) || 0)
-  editingFee.value = ''
-  ElMessage.success('佣金设置已保存')
-}
-
-function feeText(name) {
-  const cfg = (portfolio.brokerFee || {})[name] || { rate: 0, min: 0 }
-  if (!cfg.rate && !cfg.min) return '未设置佣金'
-  const parts = []
-  if (cfg.rate) parts.push(`万${Math.round(cfg.rate * 10000 * 100) / 100}`)
-  if (cfg.min) parts.push(`最低 ${cfg.min} 元`)
-  return parts.join(' · ')
-}
+// 券商资料与佣金档位在独立页面管理（/brokers），这里只做入口跳转
 
 // ===== 标签管理 =====
 const newTag = ref('')
@@ -595,7 +518,7 @@ function commitRenamePurpose(oldTag) {
         <span class="row-value">{{ rateValueText }}</span>
         <el-icon class="chev"><ArrowRight /></el-icon>
       </div>
-      <div class="srow" @click="openSheet('brokers')">
+      <div class="srow" @click="router.push('/brokers')">
         <el-icon class="ico"><OfficeBuilding /></el-icon>
         <span class="row-title">券商管理</span>
         <span class="row-value">{{ portfolio.brokers.length }} 个账户</span>
@@ -798,50 +721,6 @@ function commitRenamePurpose(oldTag) {
               </div>
             </div>
             <div class="muted" style="margin-top: 12px">当前汇率：USD/CNY {{ settings.rates.usd }} · HKD/CNY {{ settings.rates.hkd }}</div>
-          </template>
-
-          <!-- 券商管理 -->
-          <template v-else-if="sheet === 'brokers'">
-            <div class="st-note">
-              建立多个券商账户分别记账。股票的买卖、分红与资金出入只在该股票所属券商账户内流动。至少保留一个账户。
-              设置佣金后，买卖记账时手续费会按成交金额自动带出（仍可手改）。
-            </div>
-            <div class="row gap8" style="margin: 12px 0">
-              <el-input v-model="newBroker" placeholder="券商名称，如：华泰证券" @keyup.enter="addBroker" />
-              <el-button type="primary" @click="addBroker">添加</el-button>
-            </div>
-            <div v-for="b in portfolio.brokers" :key="b" class="tag-row broker-row">
-              <template v-if="editingBroker === b">
-                <el-input v-model="brokerRename" size="small" style="flex: 1" @keyup.enter="commitRenameBroker(b)" />
-                <el-button size="small" type="primary" @click="commitRenameBroker(b)">保存</el-button>
-                <el-button size="small" @click="editingBroker = ''">取消</el-button>
-              </template>
-              <template v-else-if="editingFee === b">
-                <div class="row gap8" style="flex: 1; align-items: center">
-                  <el-input-number v-model="feeRateWan" :min="0" :precision="2" :controls="false" size="small" placeholder="费率" style="width: 88px" />
-                  <span class="muted">万分之</span>
-                  <el-input-number v-model="feeMin" :min="0" :precision="2" :controls="false" size="small" placeholder="最低" style="width: 88px" />
-                  <span class="muted">元起</span>
-                </div>
-                <div class="row gap4">
-                  <el-button size="small" type="primary" @click="commitFee(b)">保存</el-button>
-                  <el-button size="small" @click="editingFee = ''">取消</el-button>
-                </div>
-              </template>
-              <template v-else>
-                <div class="row gap8">
-                  <span class="tag-name">{{ b }}</span>
-                  <span v-if="b === portfolio.defaultBroker" class="muted" style="font-size: 12px">（默认）</span>
-                </div>
-                <div class="muted" style="font-size: 12px; flex-basis: 100%">{{ feeText(b) }}</div>
-                <div class="row gap4">
-                  <el-button v-if="b !== portfolio.defaultBroker" size="small" text type="primary" @click="setDefaultBroker(b)">设为默认</el-button>
-                  <el-button size="small" text @click="startEditFee(b)">佣金</el-button>
-                  <el-button size="small" text @click="startRenameBroker(b)">重命名</el-button>
-                  <el-button size="small" text type="danger" @click="removeBroker(b)">删除</el-button>
-                </div>
-              </template>
-            </div>
           </template>
 
           <!-- 标签管理 -->
@@ -1149,10 +1028,7 @@ function commitRenamePurpose(oldTag) {
 .tag-row:last-child {
   border-bottom: none;
 }
-/* 券商行比标签多一行佣金说明，允许换行：名称 / 佣金 / 操作按钮 各占一行 */
-.broker-row {
-  flex-wrap: wrap;
-}
+
 .tag-name {
   font-size: 14px;
 }

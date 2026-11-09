@@ -7,6 +7,7 @@ const routes = [
   { path: '/ipo', name: 'ipo-calendar', component: () => import('../views/IpoCalendar.vue') },
   { path: '/trades', name: 'trades', component: () => import('../views/Trades.vue') },
   { path: '/cash', name: 'cash-accounts', component: () => import('../views/CashAccounts.vue') },
+  { path: '/brokers', name: 'brokers', component: () => import('../views/Brokers.vue') },
   { path: '/add-asset', name: 'add-asset', component: () => import('../views/AddAsset.vue') },
   { path: '/settings', name: 'settings', component: () => import('../views/Settings.vue') },
   { path: '/composition', name: 'composition', component: () => import('../views/Composition.vue') },

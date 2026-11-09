@@ -250,7 +250,7 @@ watch(
   () => {
     const amt = quickShares.value * effPrice.value
     if (!quickFeeTouched.value) {
-      const next = calcBrokerFee(amt, (portfolio.brokerFee || {})[quick.broker])
+      const next = calcBrokerFee(amt, (portfolio.brokerFee || {})[quick.broker], assetTypeValue.value)
       if (Number(quick.fee) !== next) quick.fee = next
     }
     if (!quickTaxTouched.value) {

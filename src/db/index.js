@@ -96,6 +96,10 @@ function migrate() {
   // 买卖记账时据此自动带出手续费，0 表示未设置（保持手填）
   try { run('ALTER TABLE brokers ADD COLUMN fee_rate REAL DEFAULT 0') } catch {}
   try { run('ALTER TABLE brokers ADD COLUMN fee_min REAL DEFAULT 0') } catch {}
+  // 分档费率：JSON 数组 [{ key: 'stock'|'fund'|'bond'|'default', rate, min }]。
+  // 同一券商对不同品种费率不同（股票 / ETF·LOF / 可转债），按交易的资产类别自动选档；
+  // 空字符串表示沿用上面单一的 fee_rate/fee_min（老配置）
+  try { run('ALTER TABLE brokers ADD COLUMN fee_json TEXT DEFAULT ""') } catch {}
   // 确保至少存在一个券商账户
   const cnt = get('SELECT COUNT(*) AS c FROM brokers')
   if (!cnt || cnt.c === 0) run('INSERT INTO brokers (name) VALUES (?)', [DEFAULT_BROKER])
@@ -373,11 +377,18 @@ export function insertBroker(name) {
   run('INSERT INTO brokers (name) VALUES (?)', [name])
 }
 
-/** 券商佣金配置：rate 为小数（万2.5 = 0.00025），min 为最低佣金（元） */
-export function updateBrokerFee(name, rate, min) {
-  run('UPDATE brokers SET fee_rate = ?, fee_min = ? WHERE name = ?', [
-    Number(rate) || 0,
-    Number(min) || 0,
+/**
+ * 券商佣金档位：tiers = [{ key: 'stock'|'fund'|'bond'|'default', rate, min }]
+ * rate 为小数（万2.5 = 0.00025），min 为最低佣金（元）。
+ * 兜底档同时写回 fee_rate/fee_min，供只读单档的老逻辑兼容
+ */
+export function updateBrokerFee(name, tiers) {
+  const arr = Array.isArray(tiers) ? tiers : []
+  const def = arr.find((t) => t.key === 'default') || { rate: 0, min: 0 }
+  run('UPDATE brokers SET fee_json = ?, fee_rate = ?, fee_min = ? WHERE name = ?', [
+    JSON.stringify(arr),
+    Number(def.rate) || 0,
+    Number(def.min) || 0,
     name
   ])
 }

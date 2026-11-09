@@ -5,7 +5,7 @@ import dayjs from 'dayjs'
 import { usePortfolioStore } from '../stores/portfolio'
 import { useSettingsStore } from '../stores/settings'
 import { lookupQuote } from '../services/quotes'
-import { fmtNum, fmtMoney } from '../utils/format'
+import { fmtNum, fmtMoney, assetClass } from '../utils/format'
 import { calcBrokerFee } from '../utils/fee'
 import { DEFAULT_BROKER } from '../constants'
 
@@ -98,7 +98,12 @@ watch(
   () => {
     if (feeTouched.value || !form.linkCash) return
     const amt = (Number(form.shares) || 0) * (Number(form.costPrice) || 0)
-    const next = calcBrokerFee(amt, (portfolio.brokerFee || {})[form.broker])
+    // 新建仓时标的多半还没落库，按代码推断资产类别来选费率档位
+    const next = calcBrokerFee(
+      amt,
+      (portfolio.brokerFee || {})[form.broker],
+      assetClass(form.market, form.code)
+    )
     if (Number(form.fee) !== next) form.fee = next
   }
 )

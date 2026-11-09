@@ -127,8 +127,8 @@ function shownFlows(r) {
         累计入金包含补录建仓 {{ fmtMoney(initialInflow, 0) }}（补录历史持仓时自动生成，非手动转入）
       </div>
       <div class="muted note">
-        账户的新增 / 改名 / 删除在
-        <span class="link" @click="router.push('/settings')">设置 › 券商管理</span>
+        账户资料与佣金费率在
+        <span class="link" @click="router.push('/brokers')">券商管理</span>
       </div>
     </div>
 
@@ -184,7 +184,7 @@ function shownFlows(r) {
     <div v-if="!rows.length" class="empty-tip">
       <div class="icon"><el-icon :size="40"><ArrowRight /></el-icon></div>
       <div>暂无券商账户</div>
-      <div class="muted">到「设置 › 券商管理」先建一个账户</div>
+      <div class="muted">到「券商管理」先建一个账户</div>
     </div>
 
     <CashForm v-model="cashVisible" :preset-broker="cashBroker" :flow="editingCash" />

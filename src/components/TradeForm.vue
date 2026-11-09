@@ -5,7 +5,7 @@ import dayjs from 'dayjs'
 import { usePortfolioStore } from '../stores/portfolio'
 import { useSettingsStore } from '../stores/settings'
 import { lookupQuote } from '../services/quotes'
-import { fmtNum, parseTags, marketLabel } from '../utils/format'
+import { fmtNum, parseTags, marketLabel, assetClass } from '../utils/format'
 import { calcBrokerFee } from '../utils/fee'
 import { debounce } from '../utils/debounce'
 import { DEFAULT_BROKER } from '../constants'
@@ -207,14 +207,20 @@ const computedAmount = computed(() => {
   return q * p + fee + tax
 })
 
+// 这笔交易的资产类别：人工标注优先，未标注按代码推断 —— 用来选券商的费率档位
+const assetClassOf = computed(() => {
+  const st = portfolio.stocks.find((s) => s.market === form.market && s.code === form.code)
+  return assetClass(form.market, form.code, st ? st.asset_type : '')
+})
+
 // 费用两个字段的「自动值」规则见 feeTouched / taxTouched（声明在文件上方）
-// 手续费：按所属券商的佣金率与最低佣金估算，买卖都算
+// 手续费：按所属券商的佣金档位估算（股票/基金/可转债各一档，未命中落兜底档），买卖都算
 function suggestFee() {
   if (feeTouched.value) return
   const q = Number(form.shares) || 0
   const p = Number(form.price) || 0
   const amt = q > 0 && p > 0 ? q * p : 0
-  const next = calcBrokerFee(amt, (portfolio.brokerFee || {})[form.broker])
+  const next = calcBrokerFee(amt, (portfolio.brokerFee || {})[form.broker], assetClassOf.value)
   if (Number(form.fee) !== next) form.fee = next
 }
 
@@ -230,7 +236,7 @@ function suggestTax() {
   if (Number(form.tax) !== next) form.tax = next
 }
 
-watch(() => [form.type, form.market, form.shares, form.price, form.broker], () => {
+watch(() => [form.type, form.market, form.shares, form.price, form.broker, assetClassOf.value], () => {
   suggestFee()
   suggestTax()
 })
