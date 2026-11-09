@@ -850,10 +850,13 @@ export const usePortfolioStore = defineStore('portfolio', {
     //   'auto'（默认，补录历史持仓）：同时自动生成一笔等额入金记录，使现金不变、本金增加，
     //         净资产/总盈亏/收益率均正确（等价于当初用这笔钱买入），并在净资产曲线上并入起点
     //   'cash'（关联扣款账户，真实买入）：记为一笔普通买入，从该券商现金里扣，不生成入金
-    async addInitialPosition({ date, market, code, name, shares, costPrice, broker, note, tag, purpose, fund }) {
+    async addInitialPosition({ date, market, code, name, shares, costPrice, fee, broker, note, tag, purpose, fund }) {
       const qty = Number(shares) || 0
       const price = Number(costPrice) || 0
-      const cost = Math.round(qty * price * 100) / 100
+      // 费用（佣金等）计入成本：成本基础的口径与普通买入一致（见 buildDailyAssets 的 processTrade），
+      // 自动入金也按含费金额生成，保证「本金 = 补录建仓入金」恒等式不被费税打破
+      const feeAmt = Math.max(0, Number(fee) || 0)
+      const cost = Math.round((qty * price + feeAmt) * 100) / 100
       const b = broker || this.defaultBroker
       const tagArr = Array.isArray(tag) ? tag.filter(Boolean) : []
       const tagStr = JSON.stringify(tagArr)
@@ -861,7 +864,7 @@ export const usePortfolioStore = defineStore('portfolio', {
       const fromCash = fund === 'cash'
       run(
         'INSERT INTO trades (date, market, code, name, type, shares, price, fee, tax, amount, note, broker, origin) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
-        [date, market, code, name || '', 'buy', qty, price, 0, 0, 0, note || '', b, fromCash ? '' : 'initial']
+        [date, market, code, name || '', 'buy', qty, price, feeAmt, 0, 0, note || '', b, fromCash ? '' : 'initial']
       )
       if (!fromCash) {
         // 入金记录用 ref_id 指向刚插入的买入记录，之后改期/改金额/删除都靠它精确定位

@@ -29,6 +29,7 @@ const form = reactive({
   name: '',
   shares: null,
   costPrice: null,
+  fee: null,
   date: dayjs().format('YYYY-MM-DD'),
   broker: '',
   note: '',
@@ -47,6 +48,7 @@ function reset() {
     name: '',
     shares: null,
     costPrice: null,
+    fee: null,
     date: dayjs().format('YYYY-MM-DD'),
     broker: portfolio.defaultBroker || DEFAULT_BROKER,
     note: '',
@@ -80,7 +82,10 @@ function syncPurposes(v) {
 // A股没有碎股：数量输入精度按市场切换（港股/美股保留 3 位小数）
 const sharePrecision = computed(() => (form.market === 'A' ? 0 : 3))
 
-const totalCost = computed(() => (Number(form.shares) || 0) * (Number(form.costPrice) || 0))
+// 含费总成本：费用与数量×价格一样计入成本与本金
+const totalCost = computed(
+  () => (Number(form.shares) || 0) * (Number(form.costPrice) || 0) + (Number(form.fee) || 0)
+)
 
 // 关联账户的可用余额，用于提示「扣款后会不会变负」
 const brokerBalance = computed(() => (portfolio.totals.brokerCash || {})[form.broker] || 0)
@@ -144,6 +149,7 @@ async function submit() {
       name: form.name.trim(),
       shares: Number(form.shares),
       costPrice: Number(form.costPrice),
+      fee: Number(form.fee) || 0,
       broker: form.broker || portfolio.defaultBroker || DEFAULT_BROKER,
       note: form.note.trim(),
       tag: [...form.tag],
@@ -168,7 +174,7 @@ defineExpose({ submit, reset, submitting })
 <template>
   <div>
     <div class="init-tip">
-      用于录入使用本软件<b>之前已持有</b>的股票：填写持仓数量与<b>历史成本价</b>即可。
+      用于录入使用本软件<b>之前已持有</b>的股票：填写持仓数量与<b>历史成本价</b>即可，如有佣金等费用可在「费用」中一并填写（计入成本与本金）。
       保存后系统会自动生成一笔等额入金记录并<b>计入本金</b>，不影响当前现金余额，
       后续的市值、盈亏、收益率计算都会以你的真实成本为准。
       净资产走势中该持仓会<b>并入曲线起点</b>（自账本第一天起按行情重估，补录当天不出现跳变）；
@@ -248,7 +254,11 @@ defineExpose({ submit, reset, submitting })
           <el-input-number v-model="form.shares" :min="0" :precision="sharePrecision" :controls="false" placeholder="股数" style="width: 100%" />
         </el-form-item>
         <el-form-item :label="form.linkCash ? '买入价格（元）' : '历史成本价（元）'" class="flex1">
-          <el-input-number v-model="form.costPrice" :min="0" :precision="4" :controls="false" :placeholder="form.linkCash ? '成交价' : '含历史费用的买入均价'" style="width: 100%" />
+          <el-input-number v-model="form.costPrice" :min="0" :precision="4" :controls="false" :placeholder="form.linkCash ? '成交价' : '买入均价（不含费用）'" style="width: 100%" />
+        </el-form-item>
+        <el-form-item label="费用（元）" class="flex1">
+          <el-input-number v-model="form.fee" :min="0" :precision="2" :controls="false" placeholder="佣金等，可选" style="width: 100%" />
+          <div class="muted" style="margin-top: 4px">计入成本与本金，留空则为 0</div>
         </el-form-item>
       </div>
 
@@ -279,7 +289,7 @@ defineExpose({ submit, reset, submitting })
         <span v-if="form.linkCash" class="muted">
           （从「{{ form.broker }}」扣除，当前可用 {{ fmtMoney(brokerBalance, 2) }}）
         </span>
-        <span v-else class="muted">（将自动生成一笔等额入金记录）</span>
+        <span v-else class="muted">（将按含费金额自动生成一笔入金记录）</span>
       </div>
       <div v-if="cashShort" class="short-warn">
         「{{ form.broker }}」现金不足，保存后该账户余额将为负（{{ fmtMoney(brokerBalance - totalCost, 2) }}）。
