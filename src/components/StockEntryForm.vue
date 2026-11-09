@@ -174,7 +174,7 @@ defineExpose({ submit, reset, submitting })
 <template>
   <div>
     <div class="init-tip">
-      用于录入使用本软件<b>之前已持有</b>的股票：填写持仓数量与<b>历史成本价</b>即可，如有佣金等费用可在「费用」中一并填写（计入成本与本金）。
+      用于录入使用本软件<b>之前已持有</b>的股票：填写持仓数量与<b>历史成本价</b>即可，如有佣金等可在「手续费」中一并填写（计入成本与本金）。
       保存后系统会自动生成一笔等额入金记录并<b>计入本金</b>，不影响当前现金余额，
       后续的市值、盈亏、收益率计算都会以你的真实成本为准。
       净资产走势中该持仓会<b>并入曲线起点</b>（自账本第一天起按行情重估，补录当天不出现跳变）；
@@ -256,11 +256,12 @@ defineExpose({ submit, reset, submitting })
         <el-form-item :label="form.linkCash ? '买入价格（元）' : '历史成本价（元）'" class="flex1">
           <el-input-number v-model="form.costPrice" :min="0" :precision="4" :controls="false" :placeholder="form.linkCash ? '成交价' : '买入均价（不含费用）'" style="width: 100%" />
         </el-form-item>
-        <el-form-item label="费用（元）" class="flex1">
-          <el-input-number v-model="form.fee" :min="0" :precision="2" :controls="false" placeholder="佣金等，可选" style="width: 100%" />
-          <div class="muted" style="margin-top: 4px">计入成本与本金，留空则为 0</div>
-        </el-form-item>
       </div>
+
+      <el-form-item label="手续费（元）">
+        <el-input-number v-model="form.fee" :min="0" :precision="2" :controls="false" placeholder="佣金等，可选" style="width: 100%" />
+        <div class="muted" style="margin-top: 4px">计入成本与本金，留空则为 0</div>
+      </el-form-item>
 
       <el-form-item label="所属券商">
         <div class="row gap8" style="width: 100%">
