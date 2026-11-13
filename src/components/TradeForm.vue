@@ -49,9 +49,11 @@ const form = reactive({
   broker: ''
 })
 /**
- * 这笔买入的钱是否真的从券商现金账户扣。
- * 关掉后：持仓与成本照记，但那个券商的现金不动 —— 净资产会偏高，
+ * 这笔交易的资金是否真的与券商现金账户联动。
+ * 买入类关掉：持仓与成本照记，但那个券商的现金不动 —— 净资产会偏高，
  * 适合「钱不从记录账户出」的情况（典型：中签冻结资金或从别处付款）。
+ * 卖出关掉：卖出照记，但到账金额不进任何券商现金 —— 净资产会偏低，
+ * 适合「卖出所得不进这个账户」的情况（如场外变现、帮别人挂单）。
  */
 const chargeCash = ref(true)
 const isBuyLikeType = computed(() => form.type === 'buy' || form.type === 'rights' || form.type === 'win')
@@ -506,14 +508,24 @@ function reset() {
           {{ form.type === 'sell' ? '实收金额' : '总成本' }}：<b>¥{{ fmtNum(computedAmount, 2) }}</b>
           <span class="muted">（手续费按券商佣金自动带出，A股卖出印花税默认 0.05%，均可手改）</span>
         </div>
-        <el-form-item v-if="isBuyLikeType" label="从券商扣款">
+        <el-form-item v-if="isBuyLikeType || form.type === 'sell'" :label="form.type === 'sell' ? '资金进券商账户' : '从券商扣款'">
           <el-switch v-model="chargeCash" />
           <span class="muted" style="margin-left: 8px; font-size: 11px; line-height: 1.5">
-            <template v-if="chargeCash">
-              应付金额将从「{{ form.broker }}」扣除
+            <template v-if="form.type === 'sell'">
+              <template v-if="chargeCash">
+                到账金额将计入「{{ form.broker }}」的现金
+              </template>
+              <template v-else>
+                券商现金<b>不变</b>：卖出照记，但净资产会偏低 —— 用于卖出所得不进这个账户的情况（如场外变现）
+              </template>
             </template>
             <template v-else>
-              券商现金<b>不变</b>：成本照记，但净资产会偏高 —— 用于钱不是从这个账户出的情况
+              <template v-if="chargeCash">
+                应付金额将从「{{ form.broker }}」扣除
+              </template>
+              <template v-else>
+                券商现金<b>不变</b>：成本照记，但净资产会偏高 —— 用于钱不是从这个账户出的情况
+              </template>
             </template>
           </span>
         </el-form-item>

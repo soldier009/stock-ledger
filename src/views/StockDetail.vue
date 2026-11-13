@@ -207,7 +207,9 @@ const quick = reactive({
   fee: 0,
   tax: 0,
   broker: '',
-  note: ''
+  note: '',
+  // 卖出专用：勾上后到账金额不进券商现金（场外变现等），与完整表单的「资金进券商账户」开关同口径
+  noCash: false
 })
 // 券商默认跟随股票的所属账户
 watch(broker, (b) => {
@@ -293,13 +295,14 @@ async function submitQuick() {
       fee: Number(quick.fee) || 0,
       tax: Number(quick.tax) || 0,
       amount: 0,
+      no_cash: quick.type === 'sell' && quick.noCash ? 1 : 0,
       note: quick.note.trim(),
       tag: [...tags.value],
       purpose: stock.value?.purpose || '',
       broker: quick.broker || broker.value
     })
     ElMessage.success(quick.type === 'buy' ? '已记录买入' : '已记录卖出')
-    Object.assign(quick, { shares: null, amount: null, price: null, fee: 0, tax: 0, note: '' })
+    Object.assign(quick, { shares: null, amount: null, price: null, fee: 0, tax: 0, note: '', noCash: false })
   } finally {
     quickSubmitting.value = false
   }
@@ -506,10 +509,20 @@ function syncPurposes(v) {
           </div>
           <div>
             <div class="muted">{{ quick.type === 'buy' ? '扣款账户' : '到账账户' }}</div>
-            <el-select v-model="quick.broker" size="small" style="width: 100%">
+            <el-select v-model="quick.broker" size="small" style="width: 100%" :disabled="quick.type === 'sell' && quick.noCash">
               <el-option v-for="b in portfolio.brokers" :key="b" :label="b" :value="b" />
             </el-select>
-            <div class="muted" style="margin-top: 2px">可用 {{ fmtMoney(brokerBalance, 2) }}</div>
+            <el-checkbox
+              v-if="quick.type === 'sell'"
+              v-model="quick.noCash"
+              size="small"
+              style="margin-top: 4px; height: auto"
+            >
+              资金不进账户
+            </el-checkbox>
+            <div v-if="!(quick.type === 'sell' && quick.noCash)" class="muted" style="margin-top: 2px">
+              可用 {{ fmtMoney(brokerBalance, 2) }}
+            </div>
           </div>
         </div>
 
@@ -517,6 +530,7 @@ function syncPurposes(v) {
           <span v-if="quick.mode === 'amount'">约 </span>
           {{ fmtShares(quickShares, market) }} 股 × {{ fmtNum(effPrice, 3) }} ＝
           <b>{{ quick.type === 'buy' ? '应付' : '到账' }} {{ fmtMoney(quickTotal, 2) }}</b>
+          <span v-if="quick.type === 'sell' && quick.noCash" class="muted">（不进账户）</span>
         </div>
         <div v-if="cashShort" class="short-warn">
           「{{ quick.broker }}」现金不足，保存后该账户余额将为负（{{ fmtMoney(brokerBalance - quickTotal, 2) }}）。

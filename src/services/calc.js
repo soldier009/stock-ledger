@@ -89,13 +89,15 @@ export function computeAll(trades, cashFlows, defaultBroker = DEFAULT_BROKER) {
         p.basis -= p.avgCost * qty
         p.shares -= qty
         p.avgCost = p.shares > 0 ? p.basis / p.shares : 0
-        addCash(t.broker, price * qty - fee - tax)
+        // no_cash：卖出所得不进券商现金（场外变现 / 帮别人挂单等）。
+        // 卖出照记，但不动账户现金 —— 净资产会因此偏低，与买入的 no_cash 对称
+        if (!t.no_cash) addCash(t.broker, price * qty - fee - tax)
       }
       // 卖出数量超过持仓（早期买入记录缺失 / 导入数据有出入）：多出的部分没有
       // 成本可结转，不能算已实现盈亏，但钱确实到账了 —— 计入现金，
       // 否则这笔资金会凭空消失（手续费已在上面整笔扣除，这里不再重复扣）。
       const extra = want - qty
-      if (extra > 0) addCash(t.broker, price * extra)
+      if (extra > 0 && !t.no_cash) addCash(t.broker, price * extra)
     } else if (type === 'div') {
       const amt = Number(t.amount) || 0
       if (amt !== 0) {
@@ -533,13 +535,13 @@ function buildDailyAssets(trades, cashFlows, currentPrices, rates, currentDate, 
         p.basis -= p.avgCost * qty
         p.shares -= qty
         p.avgCost = p.shares > 0 ? p.basis / p.shares : 0
-        cash += price * qty - fee - tax
+        if (!t.no_cash) cash += price * qty - fee - tax
         // 流出按实际拿到的净得计（扣费税）；超出持仓的部分不减少市值，也不算流出
         addFlow(t.market, p.tag, -(price * qty - fee - tax) * rateOf(t.market, rates))
       }
       // 与 computeAll 同口径：超出持仓的部分不计已实现盈亏，但资金计入现金
       const extra = want - qty
-      if (extra > 0) cash += price * extra
+      if (extra > 0 && !t.no_cash) cash += price * extra
     } else if (type === 'div') {
       const amt = Number(t.amount) || 0
       cash += amt
