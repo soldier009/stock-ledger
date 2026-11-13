@@ -224,13 +224,14 @@ function suggestFee() {
   if (Number(form.fee) !== next) form.fee = next
 }
 
-// 税费：A股卖出按全局印花税率带出；其余情况自动值归零，避免切换类型后残留
+// 税费：A股卖出按全局印花税率带出（可转债免印花税，不带）；其余情况自动值归零，
+// 避免切换类型后残留
 function suggestTax() {
   if (taxTouched.value) return
   const q = Number(form.shares) || 0
   const p = Number(form.price) || 0
   const next =
-    form.type === 'sell' && form.market === 'A' && q > 0 && p > 0
+    form.type === 'sell' && form.market === 'A' && assetClassOf.value !== 'bond' && q > 0 && p > 0
       ? Math.round(q * p * (settings.stampTaxRate || 0.0005) * 100) / 100
       : 0
   if (Number(form.tax) !== next) form.tax = next

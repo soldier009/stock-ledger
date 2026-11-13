@@ -214,6 +214,13 @@ watch(broker, (b) => {
   if (!quick.broker) quick.broker = b
 }, { immediate: true })
 
+// 打新标的只开放卖出：买入必须走打新日历的「记中签」（按发行价扣款），
+// 避免把申购重复记成普通买入；但中签之后的卖出是正常交易，得有入口。
+// 之前整块快捷交易对打新标的隐藏，导致中签的可转债无处可卖
+watch(ipoEntry, (v) => {
+  if (v && quick.type === 'buy') quick.type = 'sell'
+}, { immediate: true })
+
 const quote = computed(() => portfolio.quotes[market + ':' + code] || null)
 const quotePrice = computed(() => (quote.value && quote.value.price) || 0)
 // 成交价：手填优先，留空则取现价
@@ -254,8 +261,9 @@ watch(
       if (Number(quick.fee) !== next) quick.fee = next
     }
     if (!quickTaxTouched.value) {
+      // 印花税只对 A 股股票收：可转债免印花税，别带出来
       const tax =
-        quick.type === 'sell' && market === 'A' && amt > 0
+        quick.type === 'sell' && market === 'A' && assetTypeValue.value !== 'bond' && amt > 0
           ? Math.round(amt * (settings.stampTaxRate || 0.0005) * 100) / 100
           : 0
       if (Number(quick.tax) !== tax) quick.tax = tax
@@ -417,11 +425,12 @@ function syncPurposes(v) {
       <div class="ipo-entry-tip muted">
         中签请到<b>打新日历</b>里点「<b>记中签</b>」——那里会把代码与发行价带上，
         还能选券商账户、以及是否从该账户扣款。
+        上市后要卖出，用下方「快捷交易」选「<b>卖出</b>」即可。
       </div>
     </div>
 
-    <!-- 快捷交易：详情页内直接买卖 -->
-    <div v-else class="card quick-card">
+    <!-- 快捷交易：详情页内直接买卖（打新标的只开放卖出，买入走打新日历的记中签） -->
+    <div class="card quick-card">
       <div class="row between" @click="quickOpen = !quickOpen">
         <span class="section-title" style="margin: 0">快捷交易</span>
         <el-icon :class="{ flip: !quickOpen }"><ArrowDown /></el-icon>
@@ -429,7 +438,7 @@ function syncPurposes(v) {
 
       <template v-if="quickOpen">
         <el-radio-group v-model="quick.type" class="seg-group" size="small">
-          <el-radio-button value="buy">买入</el-radio-button>
+          <el-radio-button v-if="!ipoEntry" value="buy">买入</el-radio-button>
           <el-radio-button value="sell">卖出</el-radio-button>
         </el-radio-group>
         <el-radio-group v-model="quick.mode" class="seg-group" size="small" style="margin-top: 8px">
