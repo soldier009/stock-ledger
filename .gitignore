@@ -19,3 +19,5 @@ dev.err
 dist_bak/
 generated-images/
 _explain/
+# TWA 打包工程：含签名密钥（android.keystore）与构建产物，绝不入库
+twa/
